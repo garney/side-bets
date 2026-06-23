@@ -331,6 +331,88 @@ In production mode, Express serves the built React app from:
 client/dist
 ```
 
+## Render Deployment
+
+The repo includes a Render Blueprint:
+
+```text
+render.yaml
+```
+
+Use it from Render:
+
+1. Push this repo to GitHub.
+2. In Render, choose `New` -> `Blueprint`.
+3. Connect the `garney/side-bets` repository.
+4. Render will read `render.yaml` and create a Node web service.
+5. Add the required environment variables in Render.
+
+The Blueprint uses:
+
+```bash
+npm ci --include=dev && npm run build
+```
+
+for the build, and:
+
+```bash
+NODE_ENV=production npm start
+```
+
+for runtime.
+
+Render provides `PORT` automatically, so do not hard-code `PORT` in Render unless you have a specific reason.
+
+### Render Environment Variables
+
+Set these in the Render service:
+
+```bash
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_ANON_KEY=your-anon-public-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-secret-key
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-public-key
+ADMIN_USER_IDS=comma-separated-admin-user-ids
+```
+
+`VITE_*` values are needed during the Render build because the React app is compiled before the server starts.
+
+### Supabase URLs for Render
+
+After Render creates the service, it will give you a URL like:
+
+```text
+https://side-bets.onrender.com
+```
+
+In Supabase, go to:
+
+```text
+Authentication -> URL Configuration
+```
+
+Set or add:
+
+```text
+Site URL: https://side-bets.onrender.com
+Redirect URL: https://side-bets.onrender.com
+Redirect URL: https://side-bets.onrender.com/auth/callback
+```
+
+Keep the local URLs too if you still want local development:
+
+```text
+http://localhost:4123
+http://localhost:4123/auth/callback
+```
+
+Your Google OAuth redirect URI stays the Supabase callback URL:
+
+```text
+https://your-project-ref.supabase.co/auth/v1/callback
+```
+
 ## Docker
 
 Run a production-like container:
