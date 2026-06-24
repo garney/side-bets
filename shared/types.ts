@@ -54,6 +54,22 @@ export type CreditTransaction = {
   createdAt: string;
 };
 
+export type RedemptionStatus = "pending" | "approved" | "rejected";
+
+export type RedemptionRequest = {
+  id: string;
+  userId: string;
+  userName: string;
+  userEmail: string | null;
+  amountCredits: number;
+  status: RedemptionStatus;
+  claimDetails: string;
+  adminNote: string | null;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+};
+
 export type AdminSummary = {
   totalUsers: number;
   totalBets: number;

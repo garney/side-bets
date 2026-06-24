@@ -1,4 +1,4 @@
-import type { AdminSummary, AdminUser, CreditTransaction, Profile, SideBet } from "../../shared/types";
+import type { AdminSummary, AdminUser, CreditTransaction, Profile, RedemptionRequest, RedemptionStatus, SideBet } from "../../shared/types";
 import { supabase } from "./supabase";
 
 async function getAccessToken() {
@@ -19,10 +19,23 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
 
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
-    throw new Error(typeof body?.error === "string" ? body.error : `Request failed with ${response.status}`);
+    throw new Error(formatApiError(body?.error, response.status));
   }
 
   return response.json() as Promise<T>;
+}
+
+function formatApiError(error: unknown, status: number) {
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    if ("message" in error && typeof error.message === "string") return error.message;
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return `Request failed with ${status}`;
+    }
+  }
+  return `Request failed with ${status}`;
 }
 
 export const api = {
@@ -45,12 +58,24 @@ export const api = {
       body: JSON.stringify({ winningOptionId })
   }),
   transactions: () => apiFetch<CreditTransaction[]>("/wallet/transactions"),
+  redemptions: () => apiFetch<RedemptionRequest[]>("/wallet/redemptions"),
+  createRedemption: (payload: { amountCredits: number; claimDetails: string }) =>
+    apiFetch<RedemptionRequest>("/wallet/redemptions", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
   adminSummary: () => apiFetch<AdminSummary>("/admin/summary"),
   adminUsers: () => apiFetch<AdminUser[]>("/admin/users"),
   adminTransactions: () => apiFetch<CreditTransaction[]>("/admin/transactions"),
   adminAddCredits: (payload: { userId: string; amountCredits: number; description: string }) =>
     apiFetch<{ ok: true; creditsBalance: number }>("/admin/credits", {
       method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  adminRedemptions: () => apiFetch<RedemptionRequest[]>("/admin/redemptions"),
+  adminReviewRedemption: (id: string, payload: { status: Exclude<RedemptionStatus, "pending">; adminNote?: string }) =>
+    apiFetch<RedemptionRequest>(`/admin/redemptions/${id}`, {
+      method: "PATCH",
       body: JSON.stringify(payload)
     })
 };

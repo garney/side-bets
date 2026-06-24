@@ -62,21 +62,31 @@ button:disabled {
   line-height: 1.6;
 }
 
-.brand-mark {
-  width: 48px;
-  height: 48px;
-  display: grid;
-  place-items: center;
-  background: #173d3a;
-  color: #ffffff;
-  border-radius: 8px;
-  font-weight: 800;
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
 }
 
-.brand-mark.small {
-  width: 34px;
-  height: 34px;
-  font-size: 13px;
+.auth-logo,
+.brand-logo {
+  display: block;
+  object-fit: contain;
+}
+
+.auth-logo {
+  width: min(280px, 100%);
+  height: auto;
+  margin-bottom: 22px;
+}
+
+.brand-logo {
+  width: 156px;
+  height: 42px;
 }
 
 .setup-note,
@@ -442,11 +452,14 @@ textarea:focus {
   gap: 12px;
 }
 
+.redemption-form,
 .credit-adjustment,
+.redemption-queue,
 .admin-table {
   margin-top: 12px;
 }
 
+.redemption-form,
 .credit-adjustment {
   display: grid;
   gap: 12px;
@@ -454,6 +467,43 @@ textarea:focus {
   border: 1px solid #dfe5dc;
   border-radius: 8px;
   background: #fbfcfa;
+}
+
+.redemption-queue {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.redemption-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border-top: 1px solid #e7ece8;
+  padding-top: 10px;
+}
+
+.redemption-item p {
+  margin: 5px 0 8px;
+  color: #53615c;
+  line-height: 1.45;
+}
+
+.status.pending {
+  color: #704f05;
+}
+
+.status.approved {
+  color: #176f66;
+}
+
+.status.rejected,
+.text-button.danger {
+  color: #9d3b24;
 }
 
 @media (max-width: 1380px) {
@@ -538,6 +588,10 @@ textarea:focus {
   }
 
   .split-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .redemption-item {
     grid-template-columns: 1fr;
   }
 }

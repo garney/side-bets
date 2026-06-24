@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Bell, CheckCircle2, CircleDollarSign, LogOut, Plus, Search, ShieldCheck, Trophy, UserCircle2 } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
-import type { AdminSummary, AdminUser, CreditTransaction, Profile, SideBet } from "../../shared/types";
+import type { AdminSummary, AdminUser, CreditTransaction, Profile, RedemptionRequest, SideBet } from "../../shared/types";
 import { api } from "./api";
 import { supabase } from "./supabase";
 
@@ -21,9 +21,11 @@ export function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [sideBets, setSideBets] = useState<SideBet[]>([]);
   const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
+  const [redemptions, setRedemptions] = useState<RedemptionRequest[]>([]);
   const [adminSummary, setAdminSummary] = useState<AdminSummary | null>(null);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [adminTransactions, setAdminTransactions] = useState<CreditTransaction[]>([]);
+  const [adminRedemptions, setAdminRedemptions] = useState<RedemptionRequest[]>([]);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [form, setForm] = useState(defaultForm);
@@ -33,16 +35,28 @@ export function App() {
   const activeBets = useMemo(() => sideBets.filter((bet) => bet.status === "open").length, [sideBets]);
 
   const refreshData = useCallback(async () => {
-    const [me, bets, wallet] = await Promise.all([api.me(), api.sideBets(search, status), api.transactions()]);
+    const [me, bets, wallet, walletRedemptions] = await Promise.all([
+      api.me(),
+      api.sideBets(search, status),
+      api.transactions(),
+      api.redemptions()
+    ]);
     setProfile(me);
     setSideBets(bets);
     setTransactions(wallet);
+    setRedemptions(walletRedemptions);
 
     if (me.isAdmin) {
-      const [summary, users, adminTx] = await Promise.all([api.adminSummary(), api.adminUsers(), api.adminTransactions()]);
+      const [summary, users, adminTx, redemptionQueue] = await Promise.all([
+        api.adminSummary(),
+        api.adminUsers(),
+        api.adminTransactions(),
+        api.adminRedemptions()
+      ]);
       setAdminSummary(summary);
       setAdminUsers(users);
       setAdminTransactions(adminTx);
+      setAdminRedemptions(redemptionQueue);
     }
   }, [search, status]);
 
@@ -97,8 +111,10 @@ export function App() {
     setProfile(null);
     setSideBets([]);
     setTransactions([]);
+    setRedemptions([]);
     setAdminSummary(null);
     setAdminUsers([]);
+    setAdminRedemptions([]);
     setSessionState("signed-out");
   }
 
@@ -144,8 +160,8 @@ export function App() {
     return (
       <main className="auth-screen">
         <section className="auth-panel">
-          <div className="brand-mark">SB</div>
-          <h1>Side Bets</h1>
+          <img className="auth-logo" src="/assets/sidebets.png" alt="SideBets" />
+          <h1 className="sr-only">Side Bets</h1>
           <p>Create trusted prediction pools, buy in with credits, and settle results when the outcome is known.</p>
           <button className="primary-button" onClick={signIn}>
             <UserCircle2 size={18} />
@@ -162,8 +178,7 @@ export function App() {
       <header className="topbar">
         <div>
           <div className="brand-row">
-            <div className="brand-mark small">SB</div>
-            <strong>Side Bets</strong>
+            <img className="brand-logo" src="/assets/sidebets.png" alt="SideBets" />
           </div>
           <span className="muted">Single-port app: web, API, and sockets together.</span>
         </div>
@@ -283,12 +298,19 @@ export function App() {
             </button>
           </form>
 
-          <Wallet transactions={transactions} />
+          <Wallet transactions={transactions} redemptions={redemptions} busy={busy} onAction={withAction} />
         </aside>
       </section>
 
       {profile?.isAdmin ? (
-        <AdminCentre summary={adminSummary} users={adminUsers} transactions={adminTransactions} busy={busy} onAction={withAction} />
+        <AdminCentre
+          summary={adminSummary}
+          users={adminUsers}
+          transactions={adminTransactions}
+          redemptions={adminRedemptions}
+          busy={busy}
+          onAction={withAction}
+        />
       ) : null}
     </main>
   );
@@ -343,13 +365,66 @@ function BetActions({
   );
 }
 
-function Wallet({ transactions }: { transactions: CreditTransaction[] }) {
+function Wallet({
+  transactions,
+  redemptions,
+  busy,
+  onAction
+}: {
+  transactions: CreditTransaction[];
+  redemptions: RedemptionRequest[];
+  busy: boolean;
+  onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+}) {
+  const [redeemAmount, setRedeemAmount] = useState(1);
+  const [claimDetails, setClaimDetails] = useState("");
+
+  async function requestRedemption(event: FormEvent) {
+    event.preventDefault();
+    await onAction(
+      () =>
+        api.createRedemption({
+          amountCredits: Number(redeemAmount),
+          claimDetails
+        }),
+      "Redemption requested"
+    );
+    setClaimDetails("");
+  }
+
   return (
     <section className="wallet">
       <div className="section-heading">
         <h2>Wallet</h2>
         <span>Latest</span>
       </div>
+      <form className="redemption-form" onSubmit={requestRedemption}>
+        <div className="section-heading">
+          <h2>Redeem Credits</h2>
+          <span>Admin reviewed</span>
+        </div>
+        <label>
+          Credits to redeem
+          <input min="1" max="10000" type="number" value={redeemAmount} onChange={(event) => setRedeemAmount(Number(event.target.value))} />
+        </label>
+        <label>
+          Claim details
+          <textarea
+            value={claimDetails}
+            onChange={(event) => setClaimDetails(event.target.value)}
+            placeholder="How should an admin settle this redemption?"
+          />
+        </label>
+        <button className="primary-button" disabled={busy || !claimDetails.trim()}>
+          Request redemption
+        </button>
+      </form>
+      {redemptions.slice(0, 3).map((redemption) => (
+        <div className="transaction" key={redemption.id}>
+          <span>Redeem {redemption.status}</span>
+          <strong>{redemption.amountCredits.toFixed(2)} cr</strong>
+        </div>
+      ))}
       {transactions.slice(0, 5).map((transaction) => (
         <div className="transaction" key={transaction.id}>
           <span>{transaction.description}</span>
@@ -365,12 +440,14 @@ function AdminCentre({
   summary,
   users,
   transactions,
+  redemptions,
   busy,
   onAction
 }: {
   summary: AdminSummary | null;
   users: AdminUser[];
   transactions: CreditTransaction[];
+  redemptions: RedemptionRequest[];
   busy: boolean;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
 }) {
@@ -392,6 +469,10 @@ function AdminCentre({
         }),
       "Credits added"
     );
+  }
+
+  async function reviewRedemption(id: string, status: "approved" | "rejected") {
+    await onAction(() => api.adminReviewRedemption(id, { status }), status === "approved" ? "Redemption approved" : "Redemption rejected");
   }
 
   return (
@@ -434,6 +515,34 @@ function AdminCentre({
           Add credits
         </button>
       </form>
+      <section className="redemption-queue">
+        <div className="section-heading">
+          <h2>Redemptions</h2>
+          <span>{redemptions.filter((redemption) => redemption.status === "pending").length} pending</span>
+        </div>
+        {redemptions.slice(0, 8).map((redemption) => (
+          <article className="redemption-item" key={redemption.id}>
+            <div>
+              <strong>
+                {redemption.userName} wants {redemption.amountCredits.toFixed(2)} cr
+              </strong>
+              <p>{redemption.claimDetails}</p>
+              <span className={`status ${redemption.status}`}>{redemption.status}</span>
+            </div>
+            {redemption.status === "pending" ? (
+              <div className="row-actions">
+                <button disabled={busy} onClick={() => reviewRedemption(redemption.id, "approved")}>
+                  Approve
+                </button>
+                <button className="text-button danger" disabled={busy} onClick={() => reviewRedemption(redemption.id, "rejected")}>
+                  Reject
+                </button>
+              </div>
+            ) : null}
+          </article>
+        ))}
+        {redemptions.length === 0 ? <p className="muted">No redemption requests yet.</p> : null}
+      </section>
       <div className="admin-table">
         {transactions.slice(0, 8).map((transaction) => (
           <div className="transaction" key={transaction.id}>

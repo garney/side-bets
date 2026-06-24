@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
-import type { AdminSummary, AdminUser, BetOption, CreditTransaction } from "../shared/types.js";
+import type { AdminSummary, AdminUser, BetOption, CreditTransaction, RedemptionRequest, RedemptionStatus } from "../shared/types.js";
 import { requireAdmin, requireAuth, type AuthedRequest } from "./auth.js";
 import { mapSideBet } from "./mappers.js";
 import { supabaseAdmin } from "./supabase.js";
@@ -31,6 +31,16 @@ const adminCreditAdjustmentSchema = z.object({
   description: z.string().min(3).max(180).default("Admin credit adjustment")
 });
 
+const createRedemptionSchema = z.object({
+  amountCredits: z.number().positive().max(10000),
+  claimDetails: z.string().min(3).max(1000)
+});
+
+const updateRedemptionSchema = z.object({
+  status: z.enum(["approved", "rejected"]),
+  adminNote: z.string().max(1000).optional()
+});
+
 export function createApiRouter(notifyBetChanged: (betId: string) => Promise<void>) {
   const router = Router();
 
@@ -47,6 +57,10 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       .single();
 
     if (error) {
+      if (isMissingRedemptionTable(error)) {
+        res.json([]);
+        return;
+      }
       res.status(500).json({ error: error.message });
       return;
     }
@@ -280,6 +294,96 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
     res.json(data.map(mapTransaction));
   });
 
+  router.get("/wallet/redemptions", requireAuth, async (req, res) => {
+    const user = (req as AuthedRequest).user;
+    const { data, error } = await supabaseAdmin
+      .from("redemption_requests")
+      .select("*, profiles!redemption_requests_user_id_fkey(display_name, email)")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(25);
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.json(data.map(mapRedemptionRequest));
+  });
+
+  router.post("/wallet/redemptions", requireAuth, async (req, res) => {
+    const parsed = createRedemptionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const user = (req as AuthedRequest).user;
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("credits_balance")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      res.status(404).json({ error: "Profile not found" });
+      return;
+    }
+
+    const amount = parsed.data.amountCredits;
+    const currentBalance = Number(profile.credits_balance);
+    if (currentBalance < amount) {
+      res.status(402).json({ error: "Not enough credits to redeem" });
+      return;
+    }
+
+    const nextBalance = currentBalance - amount;
+    const { error: balanceError } = await supabaseAdmin
+      .from("profiles")
+      .update({ credits_balance: nextBalance })
+      .eq("id", user.id);
+
+    if (balanceError) {
+      res.status(500).json({ error: balanceError.message });
+      return;
+    }
+
+    const { data: redemption, error: redemptionError } = await supabaseAdmin
+      .from("redemption_requests")
+      .insert({
+        user_id: user.id,
+        amount_credits: amount,
+        claim_details: parsed.data.claimDetails
+      })
+      .select("*, profiles!redemption_requests_user_id_fkey(display_name, email)")
+      .single();
+
+    if (redemptionError) {
+      await supabaseAdmin.from("profiles").update({ credits_balance: currentBalance }).eq("id", user.id);
+      if (isMissingRedemptionTable(redemptionError)) {
+        res.status(503).json({ error: "Redemption requests are not set up yet. Run supabase/migrations/0002_redemption_requests.sql." });
+        return;
+      }
+      res.status(500).json({ error: redemptionError.message });
+      return;
+    }
+
+    const { error: transactionError } = await supabaseAdmin.from("credit_transactions").insert({
+      user_id: user.id,
+      amount_credits: -amount,
+      kind: "withdrawal",
+      description: "Redemption request",
+      created_by: user.id
+    });
+
+    if (transactionError) {
+      res.status(500).json({ error: transactionError.message });
+      return;
+    }
+
+    res.status(201).json(mapRedemptionRequest(redemption));
+  });
+
   router.get("/admin/summary", requireAuth, requireAdmin, async (_req, res) => {
     const [profiles, bets, openBets, transactions] = await Promise.all([
       supabaseAdmin.from("profiles").select("credits_balance", { count: "exact" }),
@@ -306,6 +410,10 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       .order("display_name", { ascending: true });
 
     if (error) {
+      if (isMissingRedemptionTable(error)) {
+        res.json([]);
+        return;
+      }
       res.status(500).json({ error: error.message });
       return;
     }
@@ -379,7 +487,138 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
     res.json(data.map(mapTransaction));
   });
 
+  router.get("/admin/redemptions", requireAuth, requireAdmin, async (_req, res) => {
+    const { data, error } = await supabaseAdmin
+      .from("redemption_requests")
+      .select("*, profiles!redemption_requests_user_id_fkey(display_name, email)")
+      .order("created_at", { ascending: false })
+      .limit(100);
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.json(data.map(mapRedemptionRequest));
+  });
+
+  router.patch("/admin/redemptions/:id", requireAuth, requireAdmin, async (req, res) => {
+    const parsed = updateRedemptionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const admin = (req as AuthedRequest).user;
+    const { data: redemption, error: redemptionError } = await supabaseAdmin
+      .from("redemption_requests")
+      .select("*")
+      .eq("id", req.params.id)
+      .single();
+
+    if (redemptionError || !redemption) {
+      if (redemptionError && isMissingRedemptionTable(redemptionError)) {
+        res.status(503).json({ error: "Redemption requests are not set up yet. Run supabase/migrations/0002_redemption_requests.sql." });
+        return;
+      }
+      res.status(404).json({ error: "Redemption request not found" });
+      return;
+    }
+
+    if (redemption.status !== "pending") {
+      res.status(409).json({ error: "This redemption request has already been reviewed" });
+      return;
+    }
+
+    if (parsed.data.status === "rejected") {
+      const { data: profile, error: profileError } = await supabaseAdmin
+        .from("profiles")
+        .select("credits_balance")
+        .eq("id", redemption.user_id)
+        .single();
+
+      if (profileError || !profile) {
+        res.status(404).json({ error: "User profile not found" });
+        return;
+      }
+
+      const refund = Number(redemption.amount_credits);
+      const { error: refundError } = await supabaseAdmin
+        .from("profiles")
+        .update({ credits_balance: Number(profile.credits_balance) + refund })
+        .eq("id", redemption.user_id);
+
+      if (refundError) {
+        res.status(500).json({ error: refundError.message });
+        return;
+      }
+
+      await supabaseAdmin.from("credit_transactions").insert({
+        user_id: redemption.user_id,
+        amount_credits: refund,
+        kind: "adjustment",
+        description: "Rejected redemption refund",
+        created_by: admin.id
+      });
+    }
+
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from("redemption_requests")
+      .update({
+        status: parsed.data.status,
+        admin_note: parsed.data.adminNote ?? null,
+        reviewed_by: admin.id,
+        reviewed_at: new Date().toISOString()
+      })
+      .eq("id", redemption.id)
+      .select("*, profiles!redemption_requests_user_id_fkey(display_name, email)")
+      .single();
+
+    if (updateError) {
+      res.status(500).json({ error: updateError.message });
+      return;
+    }
+
+    res.json(mapRedemptionRequest(updated));
+  });
+
   return router;
+}
+
+function mapRedemptionRequest(row: {
+  id: string;
+  user_id: string;
+  amount_credits: string | number;
+  status: RedemptionStatus;
+  claim_details: string;
+  admin_note: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  profiles?: { display_name: string; email: string | null } | null;
+}): RedemptionRequest {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    userName: row.profiles?.display_name ?? "Unknown user",
+    userEmail: row.profiles?.email ?? null,
+    amountCredits: Number(row.amount_credits),
+    status: row.status,
+    claimDetails: row.claim_details,
+    adminNote: row.admin_note,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    createdAt: row.created_at
+  };
+}
+
+function isMissingRedemptionTable(error: { code?: string; message?: string }) {
+  return (
+    error.code === "42P01" ||
+    error.message?.includes("redemption_requests") ||
+    error.message?.includes("schema cache") ||
+    false
+  );
 }
 
 function mapTransaction(row: {

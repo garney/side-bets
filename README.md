@@ -14,6 +14,7 @@ This first version is intentionally simple: one Node process serves the React cl
 - The manager, or an admin, settles the side bet by choosing the winning option.
 - Winners split the pot after the house fee. The current default house fee is `0%`.
 - Admin users can view platform summaries, add credits to users, and inspect transaction history.
+- Users can request to redeem credits, and admins approve or reject those requests.
 
 ## Infrastructure
 
@@ -105,6 +106,7 @@ shared/
 supabase/
   migrations/
     0001_initial_schema.sql
+    0002_redemption_requests.sql
 
 Dockerfile
 docker-compose.yml
@@ -125,8 +127,10 @@ The first migration creates:
   A user's selected option and stake for a side bet.
 - `credit_transactions`
   Immutable-style transaction records for admin credit adjustments, buy-ins, payouts, fees, withdrawals, and future payment deposits.
+- `redemption_requests`
+  User requests to exchange credits, including claim details and admin review status.
 
-The migration also enables Row Level Security and adds initial read/update policies. The server currently performs trusted writes using the service role key after validating the user's Supabase JWT.
+The migrations also enable Row Level Security and add initial read/update policies. The server currently performs trusted writes using the service role key after validating the user's Supabase JWT.
 
 ## Environment Variables
 
@@ -176,7 +180,7 @@ Copy:
 
 Put them into `.env`.
 
-### 2. Apply the Database Migration
+### 2. Apply the Database Migrations
 
 In Supabase:
 
@@ -184,10 +188,11 @@ In Supabase:
 SQL Editor -> New query
 ```
 
-Copy the contents of:
+Copy and run the migrations in order:
 
 ```text
 supabase/migrations/0001_initial_schema.sql
+supabase/migrations/0002_redemption_requests.sql
 ```
 
 Run the query.
@@ -457,6 +462,7 @@ Restart the app after changing `.env`.
 This is an early scaffold. The following pieces are intentionally basic:
 
 - Credits can only be added by admins in this version.
+- Redemption requests reserve credits immediately and require admin review.
 - Real payment deposits are not implemented yet.
 - Withdrawals and admin adjustments need dedicated UI and stronger audit controls.
 - Settlement trusts the manager or admin to enter the correct result.
