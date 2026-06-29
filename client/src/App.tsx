@@ -382,6 +382,7 @@ export function App() {
               onClose={closeSideBetModal}
               onAction={withAction}
               canSettle={profile?.id === selectedSideBet?.managerId || Boolean(profile?.isAdmin)}
+              canRectify={Boolean(profile?.isAdmin)}
             />
           ) : null}
         </>
@@ -415,6 +416,7 @@ function SideBetModal({
   loading,
   busy,
   canSettle,
+  canRectify,
   onClose,
   onAction
 }: {
@@ -422,6 +424,7 @@ function SideBetModal({
   loading: boolean;
   busy: boolean;
   canSettle: boolean;
+  canRectify: boolean;
   onClose: () => void;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
 }) {
@@ -431,7 +434,7 @@ function SideBetModal({
         <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close side bet details">
           <X size={18} />
         </button>
-        <SideBetFocusPanel bet={bet} loading={loading} busy={busy} canSettle={canSettle} onAction={onAction} />
+        <SideBetFocusPanel bet={bet} loading={loading} busy={busy} canSettle={canSettle} canRectify={canRectify} onAction={onAction} />
       </div>
     </div>
   );
@@ -442,12 +445,14 @@ function SideBetFocusPanel({
   loading,
   busy,
   canSettle,
+  canRectify,
   onAction
 }: {
   bet: SideBetDetail | null;
   loading: boolean;
   busy: boolean;
   canSettle: boolean;
+  canRectify: boolean;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
 }) {
   const optionStats = useMemo(() => {
@@ -548,7 +553,51 @@ function SideBetFocusPanel({
       </section>
 
       <BetActions bet={bet} busy={busy} onAction={onAction} canSettle={canSettle} />
+      {canRectify && bet.status === "settled" ? <RectifySettlementForm bet={bet} busy={busy} onAction={onAction} /> : null}
     </section>
+  );
+}
+
+function RectifySettlementForm({
+  bet,
+  busy,
+  onAction
+}: {
+  bet: SideBetDetail;
+  busy: boolean;
+  onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+}) {
+  const [correctedOptionId, setCorrectedOptionId] = useState(bet.winningOptionId ?? bet.options[0]?.id ?? "");
+
+  useEffect(() => {
+    setCorrectedOptionId(bet.winningOptionId ?? bet.options[0]?.id ?? "");
+  }, [bet.id, bet.options, bet.winningOptionId]);
+
+  async function rectifySettlement(event: FormEvent) {
+    event.preventDefault();
+    await onAction(() => api.rectifySideBet(bet.id, correctedOptionId), "Side bet settlement rectified");
+  }
+
+  return (
+    <form className="rectification-form" onSubmit={rectifySettlement}>
+      <div className="section-heading">
+        <h2>Rectify Settlement</h2>
+        <span>Admin only</span>
+      </div>
+      <label>
+        Correct winning option
+        <select value={correctedOptionId} onChange={(event) => setCorrectedOptionId(event.target.value)}>
+          {bet.options.map((option) => (
+            <option value={option.id} key={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button className="primary-button" disabled={busy || !correctedOptionId || correctedOptionId === bet.winningOptionId}>
+        Rectify settlement
+      </button>
+    </form>
   );
 }
 

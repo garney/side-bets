@@ -69,6 +69,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ winningOptionId })
   }),
+  rectifySideBet: (id: string, winningOptionId: string) =>
+    apiFetch<{
+      ok: true;
+      previousWinnerCount: number;
+      correctedWinnerCount: number;
+      previousPayoutCredits: number;
+      correctedPayoutCredits: number;
+      feeCredits: number;
+    }>(`/admin/side-bets/${id}/rectify`, {
+      method: "POST",
+      body: JSON.stringify({ winningOptionId })
+    }),
   transactions: () => apiFetch<CreditTransaction[]>("/wallet/transactions"),
   redemptions: () => apiFetch<RedemptionRequest[]>("/wallet/redemptions"),
   creditRequests: () => apiFetch<CreditRequest[]>("/wallet/credit-requests"),

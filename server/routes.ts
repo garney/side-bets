@@ -34,6 +34,10 @@ const settleBetSchema = z.object({
   winningOptionId: z.string().min(1)
 });
 
+const rectifySettlementSchema = z.object({
+  winningOptionId: z.string().min(1)
+});
+
 const adminCreditAdjustmentSchema = z.object({
   userId: z.string().uuid(),
   amountCredits: z.number().positive().max(10000),
@@ -310,6 +314,138 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
 
     await notifyBetChanged(bet.id);
     res.json({ ok: true, winners: winners.length, payoutCredits: payout, feeCredits: fee });
+  });
+
+  router.post("/admin/side-bets/:id/rectify", requireAuth, requireAdmin, async (req, res) => {
+    const parsed = rectifySettlementSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const admin = (req as AuthedRequest).user;
+    const { data: bet, error: betError } = await supabaseAdmin.from("side_bets").select("*").eq("id", req.params.id).single();
+    if (betError || !bet) {
+      res.status(404).json({ error: "Side bet not found" });
+      return;
+    }
+
+    if (bet.status !== "settled" || !bet.winning_option_id) {
+      res.status(409).json({ error: "Only settled side bets can be rectified" });
+      return;
+    }
+
+    const options = bet.options as BetOption[];
+    const correctedOption = options.find((option) => option.id === parsed.data.winningOptionId);
+    if (!correctedOption) {
+      res.status(400).json({ error: "Invalid corrected winning option" });
+      return;
+    }
+
+    if (bet.winning_option_id === parsed.data.winningOptionId) {
+      res.status(409).json({ error: "This option is already marked as the winner" });
+      return;
+    }
+
+    const entriesResponse = await supabaseAdmin.from("bet_entries").select("*").eq("side_bet_id", bet.id);
+    if (entriesResponse.error) {
+      res.status(500).json({ error: entriesResponse.error.message });
+      return;
+    }
+
+    const entries = entriesResponse.data;
+    const pot = entries.reduce((total, entry) => total + Number(entry.stake_credits), 0);
+    const fee = pot * (Number(bet.house_fee_percent) / 100);
+    const distributablePot = pot - fee;
+    const previousWinners = entries.filter((entry) => entry.option_id === bet.winning_option_id);
+    const correctedWinners = entries.filter((entry) => entry.option_id === parsed.data.winningOptionId);
+    const previousPayout = previousWinners.length > 0 ? distributablePot / previousWinners.length : 0;
+    const correctedPayout = correctedWinners.length > 0 ? distributablePot / correctedWinners.length : 0;
+    const deltas = new Map<string, number>();
+
+    for (const winner of previousWinners) {
+      deltas.set(winner.user_id, (deltas.get(winner.user_id) ?? 0) - previousPayout);
+    }
+
+    for (const winner of correctedWinners) {
+      deltas.set(winner.user_id, (deltas.get(winner.user_id) ?? 0) + correctedPayout);
+    }
+
+    const payableDeltas = [...deltas.entries()].filter(([, amount]) => Math.abs(amount) > 0.0001);
+    const affectedUserIds = payableDeltas.map(([userId]) => userId);
+    if (affectedUserIds.length > 0) {
+      const { data: profiles, error: profilesError } = await supabaseAdmin
+        .from("profiles")
+        .select("id, credits_balance")
+        .in("id", affectedUserIds);
+
+      if (profilesError || !profiles) {
+        res.status(500).json({ error: profilesError?.message ?? "Could not load affected profiles" });
+        return;
+      }
+
+      const balances = new Map(profiles.map((profile) => [profile.id, Number(profile.credits_balance)]));
+      for (const [userId, delta] of payableDeltas) {
+        const currentBalance = balances.get(userId);
+        if (currentBalance === undefined) {
+          res.status(404).json({ error: "Affected user profile not found" });
+          return;
+        }
+
+        if (currentBalance + delta < 0) {
+          res.status(409).json({
+            error: "Cannot rectify automatically because a previous winner no longer has enough credits to reverse their payout"
+          });
+          return;
+        }
+      }
+
+      for (const [userId, delta] of payableDeltas) {
+        const nextBalance = (balances.get(userId) ?? 0) + delta;
+        const { error: balanceError } = await supabaseAdmin.from("profiles").update({ credits_balance: nextBalance }).eq("id", userId);
+        if (balanceError) {
+          res.status(500).json({ error: balanceError.message });
+          return;
+        }
+
+        const { error: transactionError } = await supabaseAdmin.from("credit_transactions").insert({
+          user_id: userId,
+          amount_credits: delta,
+          kind: "adjustment",
+          description: delta < 0 ? `Settlement rectification reversal for ${bet.title}` : `Settlement rectification payout for ${bet.title}`,
+          side_bet_id: bet.id,
+          created_by: admin.id
+        });
+
+        if (transactionError) {
+          res.status(500).json({ error: transactionError.message });
+          return;
+        }
+      }
+    }
+
+    const { error: updateError } = await supabaseAdmin
+      .from("side_bets")
+      .update({
+        winning_option_id: parsed.data.winningOptionId,
+        settles_at: new Date().toISOString()
+      })
+      .eq("id", bet.id);
+
+    if (updateError) {
+      res.status(500).json({ error: updateError.message });
+      return;
+    }
+
+    await notifyBetChanged(bet.id);
+    res.json({
+      ok: true,
+      previousWinnerCount: previousWinners.length,
+      correctedWinnerCount: correctedWinners.length,
+      previousPayoutCredits: previousPayout,
+      correctedPayoutCredits: correctedPayout,
+      feeCredits: fee
+    });
   });
 
   router.get("/wallet/transactions", requireAuth, async (req, res) => {
