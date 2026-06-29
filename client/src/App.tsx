@@ -382,6 +382,7 @@ export function App() {
               onClose={closeSideBetModal}
               onAction={withAction}
               canSettle={profile?.id === selectedSideBet?.managerId || Boolean(profile?.isAdmin)}
+              canEdit={profile?.id === selectedSideBet?.managerId}
               canRectify={Boolean(profile?.isAdmin)}
             />
           ) : null}
@@ -416,6 +417,7 @@ function SideBetModal({
   loading,
   busy,
   canSettle,
+  canEdit,
   canRectify,
   onClose,
   onAction
@@ -424,6 +426,7 @@ function SideBetModal({
   loading: boolean;
   busy: boolean;
   canSettle: boolean;
+  canEdit: boolean;
   canRectify: boolean;
   onClose: () => void;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
@@ -434,7 +437,7 @@ function SideBetModal({
         <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close side bet details">
           <X size={18} />
         </button>
-        <SideBetFocusPanel bet={bet} loading={loading} busy={busy} canSettle={canSettle} canRectify={canRectify} onAction={onAction} />
+        <SideBetFocusPanel bet={bet} loading={loading} busy={busy} canSettle={canSettle} canEdit={canEdit} canRectify={canRectify} onAction={onAction} />
       </div>
     </div>
   );
@@ -445,6 +448,7 @@ function SideBetFocusPanel({
   loading,
   busy,
   canSettle,
+  canEdit,
   canRectify,
   onAction
 }: {
@@ -452,6 +456,7 @@ function SideBetFocusPanel({
   loading: boolean;
   busy: boolean;
   canSettle: boolean;
+  canEdit: boolean;
   canRectify: boolean;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
 }) {
@@ -552,10 +557,109 @@ function SideBetFocusPanel({
         {bet.entries.length === 0 ? <p className="muted">No guesses yet.</p> : null}
       </section>
 
+      {canEdit && bet.status === "open" ? <EditSideBetForm bet={bet} busy={busy} onAction={onAction} /> : null}
       <BetActions bet={bet} busy={busy} onAction={onAction} canSettle={canSettle} />
       {canRectify && bet.status === "settled" ? <RectifySettlementForm bet={bet} busy={busy} onAction={onAction} /> : null}
     </section>
   );
+}
+
+function EditSideBetForm({
+  bet,
+  busy,
+  onAction
+}: {
+  bet: SideBetDetail;
+  busy: boolean;
+  onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+}) {
+  const [editForm, setEditForm] = useState(() => sideBetToEditForm(bet));
+  const hasEntries = bet.entries.length > 0;
+
+  useEffect(() => {
+    setEditForm(sideBetToEditForm(bet));
+  }, [bet]);
+
+  async function updateSideBet(event: FormEvent) {
+    event.preventDefault();
+    await onAction(
+      () =>
+        api.updateSideBet(bet.id, {
+          title: editForm.title,
+          description: editForm.description,
+          sourceUrl: editForm.sourceUrl || null,
+          buyInCredits: Number(editForm.buyInCredits),
+          closesAt: new Date(editForm.closesAt).toISOString(),
+          options: editForm.options
+            .split("\n")
+            .map((option) => option.trim())
+            .filter(Boolean)
+        }),
+      "Side bet updated"
+    );
+  }
+
+  return (
+    <form className="side-bet-edit-form" onSubmit={updateSideBet}>
+      <div className="section-heading">
+        <h2>Edit Side Bet</h2>
+        <span>Creator only</span>
+      </div>
+      <label>
+        Title
+        <input value={editForm.title} onChange={(event) => setEditForm({ ...editForm, title: event.target.value })} />
+      </label>
+      <label>
+        What is the bet about?
+        <textarea value={editForm.description} onChange={(event) => setEditForm({ ...editForm, description: event.target.value })} />
+      </label>
+      <label>
+        Source URL
+        <input value={editForm.sourceUrl} onChange={(event) => setEditForm({ ...editForm, sourceUrl: event.target.value })} />
+      </label>
+      <div className="split-fields">
+        <label>
+          Buy-in
+          <input
+            type="number"
+            min="1"
+            value={editForm.buyInCredits}
+            disabled={hasEntries}
+            onChange={(event) => setEditForm({ ...editForm, buyInCredits: Number(event.target.value) })}
+          />
+        </label>
+        <label>
+          Closes
+          <input type="datetime-local" value={editForm.closesAt} onChange={(event) => setEditForm({ ...editForm, closesAt: event.target.value })} />
+        </label>
+      </div>
+      <label>
+        Options
+        <textarea value={editForm.options} disabled={hasEntries} onChange={(event) => setEditForm({ ...editForm, options: event.target.value })} />
+      </label>
+      {hasEntries ? <p className="muted">Buy-in and options are locked because users have already joined.</p> : null}
+      <button className="primary-button" disabled={busy}>
+        Save side bet
+      </button>
+    </form>
+  );
+}
+
+function sideBetToEditForm(bet: SideBetDetail) {
+  return {
+    title: bet.title,
+    description: bet.description,
+    sourceUrl: bet.sourceUrl ?? "",
+    buyInCredits: bet.buyInCredits,
+    closesAt: toDatetimeLocalValue(bet.closesAt),
+    options: bet.options.map((option) => option.label).join("\n")
+  };
+}
+
+function toDatetimeLocalValue(value: string) {
+  const date = new Date(value);
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
 }
 
 function RectifySettlementForm({

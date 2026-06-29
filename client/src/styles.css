@@ -526,15 +526,24 @@ textarea:focus {
 
 .option-breakdown,
 .guess-list,
+.side-bet-edit-form,
 .rectification-form {
   margin-top: 16px;
   border-top: 1px solid #e7ece8;
   padding-top: 14px;
 }
 
+.side-bet-edit-form,
 .rectification-form {
   display: grid;
   gap: 12px;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fbfcfa;
+}
+
+.rectification-form {
   border: 1px solid #ead8ad;
   border-radius: 8px;
   padding: 14px;

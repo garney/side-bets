@@ -59,6 +59,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
+  updateSideBet: (id: string, payload: unknown) =>
+    apiFetch<SideBetDetail>(`/side-bets/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
   joinSideBet: (id: string, optionId: string) =>
     apiFetch<{ ok: true }>(`/side-bets/${id}/join`, {
       method: "POST",

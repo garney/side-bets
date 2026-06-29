@@ -26,6 +26,15 @@ const createBetSchema = z.object({
   options: z.array(z.string().min(1).max(80)).min(2).max(12)
 });
 
+const updateBetSchema = z.object({
+  title: z.string().min(5).max(140),
+  description: z.string().min(10).max(1200),
+  sourceUrl: z.string().url().nullable().optional(),
+  buyInCredits: z.number().positive().max(100000),
+  closesAt: z.string().datetime(),
+  options: z.array(z.string().min(1).max(80)).min(2).max(12)
+});
+
 const joinBetSchema = z.object({
   optionId: z.string().min(1)
 });
@@ -173,6 +182,76 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
 
     await notifyBetChanged(data.id);
     res.status(201).json(mapSideBet(data));
+  });
+
+  router.patch("/side-bets/:id", requireAuth, async (req, res) => {
+    const parsed = updateBetSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const user = (req as AuthedRequest).user;
+    const { data: bet, error: betError } = await supabaseAdmin
+      .from("side_bets")
+      .select("*, bet_entries(id)")
+      .eq("id", req.params.id)
+      .single();
+
+    if (betError || !bet) {
+      res.status(404).json({ error: "Side bet not found" });
+      return;
+    }
+
+    if (bet.manager_id !== user.id) {
+      res.status(403).json({ error: "Only the side bet creator can edit this side bet" });
+      return;
+    }
+
+    if (bet.status !== "open") {
+      res.status(409).json({ error: "Only open side bets can be edited" });
+      return;
+    }
+
+    if (new Date(parsed.data.closesAt).getTime() <= new Date(bet.starts_at).getTime()) {
+      res.status(400).json({ error: "Close time must be after the start time" });
+      return;
+    }
+
+    const hasEntries = (bet.bet_entries ?? []).length > 0;
+    const currentOptions = bet.options as BetOption[];
+    const nextOptions: BetOption[] = parsed.data.options.map((label) => ({ id: randomUUID(), label }));
+    const currentOptionLabels = currentOptions.map((option) => option.label);
+    const optionLabelsChanged = JSON.stringify(currentOptionLabels) !== JSON.stringify(parsed.data.options);
+    const buyInChanged = Number(bet.buy_in_credits) !== parsed.data.buyInCredits;
+
+    if (hasEntries && (optionLabelsChanged || buyInChanged)) {
+      res.status(409).json({ error: "Buy-in and options cannot be changed after users have joined" });
+      return;
+    }
+
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from("side_bets")
+      .update({
+        title: parsed.data.title,
+        description: parsed.data.description,
+        source_url: parsed.data.sourceUrl ?? null,
+        buy_in_credits: parsed.data.buyInCredits,
+        closes_at: parsed.data.closesAt,
+        options: hasEntries ? currentOptions : nextOptions
+      })
+      .eq("id", bet.id)
+      .select("*, profiles!side_bets_manager_id_fkey(display_name), bet_entries(*, profiles!bet_entries_user_id_fkey(display_name, email))")
+      .order("created_at", { referencedTable: "bet_entries", ascending: false })
+      .single();
+
+    if (updateError) {
+      res.status(500).json({ error: updateError.message });
+      return;
+    }
+
+    await notifyBetChanged(bet.id);
+    res.json(mapSideBetDetail(updated));
   });
 
   router.post("/side-bets/:id/join", requireAuth, async (req, res) => {
