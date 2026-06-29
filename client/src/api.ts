@@ -1,4 +1,15 @@
-import type { AdminSummary, AdminUser, CreditTransaction, Profile, RedemptionRequest, RedemptionStatus, SideBet } from "../../shared/types";
+import type {
+  AdminSummary,
+  AdminUser,
+  CreditRequest,
+  CreditRequestStatus,
+  CreditTransaction,
+  Profile,
+  RedemptionRequest,
+  RedemptionStatus,
+  SideBet,
+  SideBetDetail
+} from "../../shared/types";
 import { supabase } from "./supabase";
 
 async function getAccessToken() {
@@ -42,6 +53,7 @@ export const api = {
   me: () => apiFetch<Profile>("/me"),
   sideBets: (search: string, status: string) =>
     apiFetch<SideBet[]>(`/side-bets?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`),
+  sideBet: (id: string) => apiFetch<SideBetDetail>(`/side-bets/${id}`),
   createSideBet: (payload: unknown) =>
     apiFetch<SideBet>("/side-bets", {
       method: "POST",
@@ -59,8 +71,14 @@ export const api = {
   }),
   transactions: () => apiFetch<CreditTransaction[]>("/wallet/transactions"),
   redemptions: () => apiFetch<RedemptionRequest[]>("/wallet/redemptions"),
+  creditRequests: () => apiFetch<CreditRequest[]>("/wallet/credit-requests"),
   createRedemption: (payload: { amountCredits: number; claimDetails: string }) =>
     apiFetch<RedemptionRequest>("/wallet/redemptions", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  createCreditRequest: (payload: { amountCredits: number; requestReason: string }) =>
+    apiFetch<CreditRequest>("/wallet/credit-requests", {
       method: "POST",
       body: JSON.stringify(payload)
     }),
@@ -73,8 +91,14 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   adminRedemptions: () => apiFetch<RedemptionRequest[]>("/admin/redemptions"),
+  adminCreditRequests: () => apiFetch<CreditRequest[]>("/admin/credit-requests"),
   adminReviewRedemption: (id: string, payload: { status: Exclude<RedemptionStatus, "pending">; adminNote?: string }) =>
     apiFetch<RedemptionRequest>(`/admin/redemptions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  adminReviewCreditRequest: (id: string, payload: { status: Exclude<CreditRequestStatus, "pending">; adminNote?: string }) =>
+    apiFetch<CreditRequest>(`/admin/credit-requests/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload)
     })

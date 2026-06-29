@@ -1,9 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
-import type { AdminSummary, AdminUser, BetOption, CreditTransaction, RedemptionRequest, RedemptionStatus } from "../shared/types.js";
+import type {
+  AdminSummary,
+  AdminUser,
+  BetOption,
+  CreditRequest,
+  CreditRequestStatus,
+  CreditTransaction,
+  RedemptionRequest,
+  RedemptionStatus
+} from "../shared/types.js";
 import { requireAdmin, requireAuth, type AuthedRequest } from "./auth.js";
-import { mapSideBet } from "./mappers.js";
+import { mapSideBet, mapSideBetDetail } from "./mappers.js";
 import { supabaseAdmin } from "./supabase.js";
 
 const createBetSchema = z.object({
@@ -37,6 +46,16 @@ const createRedemptionSchema = z.object({
 });
 
 const updateRedemptionSchema = z.object({
+  status: z.enum(["approved", "rejected"]),
+  adminNote: z.string().max(1000).optional()
+});
+
+const createCreditRequestSchema = z.object({
+  amountCredits: z.number().positive().max(10000),
+  requestReason: z.string().min(3).max(1000)
+});
+
+const updateCreditRequestSchema = z.object({
   status: z.enum(["approved", "rejected"]),
   adminNote: z.string().max(1000).optional()
 });
@@ -99,6 +118,22 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
     }
 
     res.json(data.map(mapSideBet));
+  });
+
+  router.get("/side-bets/:id", requireAuth, async (req, res) => {
+    const { data, error } = await supabaseAdmin
+      .from("side_bets")
+      .select("*, profiles!side_bets_manager_id_fkey(display_name), bet_entries(*, profiles!bet_entries_user_id_fkey(display_name, email))")
+      .eq("id", req.params.id)
+      .order("created_at", { referencedTable: "bet_entries", ascending: false })
+      .single();
+
+    if (error || !data) {
+      res.status(404).json({ error: "Side bet not found" });
+      return;
+    }
+
+    res.json(mapSideBetDetail(data));
   });
 
   router.post("/side-bets", requireAuth, async (req, res) => {
@@ -311,6 +346,27 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
     res.json(data.map(mapRedemptionRequest));
   });
 
+  router.get("/wallet/credit-requests", requireAuth, async (req, res) => {
+    const user = (req as AuthedRequest).user;
+    const { data, error } = await supabaseAdmin
+      .from("credit_requests")
+      .select("*, profiles!credit_requests_user_id_fkey(display_name, email)")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(25);
+
+    if (error) {
+      if (isMissingCreditRequestTable(error)) {
+        res.json([]);
+        return;
+      }
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.json(data.map(mapCreditRequest));
+  });
+
   router.post("/wallet/redemptions", requireAuth, async (req, res) => {
     const parsed = createRedemptionSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -382,6 +438,36 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
     }
 
     res.status(201).json(mapRedemptionRequest(redemption));
+  });
+
+  router.post("/wallet/credit-requests", requireAuth, async (req, res) => {
+    const parsed = createCreditRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const user = (req as AuthedRequest).user;
+    const { data, error } = await supabaseAdmin
+      .from("credit_requests")
+      .insert({
+        user_id: user.id,
+        amount_credits: parsed.data.amountCredits,
+        request_reason: parsed.data.requestReason
+      })
+      .select("*, profiles!credit_requests_user_id_fkey(display_name, email)")
+      .single();
+
+    if (error) {
+      if (isMissingCreditRequestTable(error)) {
+        res.status(503).json({ error: "Credit requests are not set up yet. Run supabase/migrations/0003_credit_requests.sql." });
+        return;
+      }
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(201).json(mapCreditRequest(data));
   });
 
   router.get("/admin/summary", requireAuth, requireAdmin, async (_req, res) => {
@@ -502,6 +588,25 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
     res.json(data.map(mapRedemptionRequest));
   });
 
+  router.get("/admin/credit-requests", requireAuth, requireAdmin, async (_req, res) => {
+    const { data, error } = await supabaseAdmin
+      .from("credit_requests")
+      .select("*, profiles!credit_requests_user_id_fkey(display_name, email)")
+      .order("created_at", { ascending: false })
+      .limit(100);
+
+    if (error) {
+      if (isMissingCreditRequestTable(error)) {
+        res.json([]);
+        return;
+      }
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.json(data.map(mapCreditRequest));
+  });
+
   router.patch("/admin/redemptions/:id", requireAuth, requireAdmin, async (req, res) => {
     const parsed = updateRedemptionSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -582,6 +687,91 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
     res.json(mapRedemptionRequest(updated));
   });
 
+  router.patch("/admin/credit-requests/:id", requireAuth, requireAdmin, async (req, res) => {
+    const parsed = updateCreditRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const admin = (req as AuthedRequest).user;
+    const { data: creditRequest, error: requestError } = await supabaseAdmin
+      .from("credit_requests")
+      .select("*")
+      .eq("id", req.params.id)
+      .single();
+
+    if (requestError || !creditRequest) {
+      if (requestError && isMissingCreditRequestTable(requestError)) {
+        res.status(503).json({ error: "Credit requests are not set up yet. Run supabase/migrations/0003_credit_requests.sql." });
+        return;
+      }
+      res.status(404).json({ error: "Credit request not found" });
+      return;
+    }
+
+    if (creditRequest.status !== "pending") {
+      res.status(409).json({ error: "This credit request has already been reviewed" });
+      return;
+    }
+
+    if (parsed.data.status === "approved") {
+      const { data: profile, error: profileError } = await supabaseAdmin
+        .from("profiles")
+        .select("credits_balance")
+        .eq("id", creditRequest.user_id)
+        .single();
+
+      if (profileError || !profile) {
+        res.status(404).json({ error: "User profile not found" });
+        return;
+      }
+
+      const amount = Number(creditRequest.amount_credits);
+      const { error: balanceError } = await supabaseAdmin
+        .from("profiles")
+        .update({ credits_balance: Number(profile.credits_balance) + amount })
+        .eq("id", creditRequest.user_id);
+
+      if (balanceError) {
+        res.status(500).json({ error: balanceError.message });
+        return;
+      }
+
+      const { error: transactionError } = await supabaseAdmin.from("credit_transactions").insert({
+        user_id: creditRequest.user_id,
+        amount_credits: amount,
+        kind: "adjustment",
+        description: "Approved credit request",
+        created_by: admin.id
+      });
+
+      if (transactionError) {
+        res.status(500).json({ error: transactionError.message });
+        return;
+      }
+    }
+
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from("credit_requests")
+      .update({
+        status: parsed.data.status,
+        admin_note: parsed.data.adminNote ?? null,
+        reviewed_by: admin.id,
+        reviewed_at: new Date().toISOString()
+      })
+      .eq("id", creditRequest.id)
+      .select("*, profiles!credit_requests_user_id_fkey(display_name, email)")
+      .single();
+
+    if (updateError) {
+      res.status(500).json({ error: updateError.message });
+      return;
+    }
+
+    res.json(mapCreditRequest(updated));
+  });
+
   return router;
 }
 
@@ -612,10 +802,46 @@ function mapRedemptionRequest(row: {
   };
 }
 
+function mapCreditRequest(row: {
+  id: string;
+  user_id: string;
+  amount_credits: string | number;
+  status: CreditRequestStatus;
+  request_reason: string;
+  admin_note: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  profiles?: { display_name: string; email: string | null } | null;
+}): CreditRequest {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    userName: row.profiles?.display_name ?? "Unknown user",
+    userEmail: row.profiles?.email ?? null,
+    amountCredits: Number(row.amount_credits),
+    status: row.status,
+    requestReason: row.request_reason,
+    adminNote: row.admin_note,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
+    createdAt: row.created_at
+  };
+}
+
 function isMissingRedemptionTable(error: { code?: string; message?: string }) {
   return (
     error.code === "42P01" ||
     error.message?.includes("redemption_requests") ||
+    error.message?.includes("schema cache") ||
+    false
+  );
+}
+
+function isMissingCreditRequestTable(error: { code?: string; message?: string }) {
+  return (
+    error.code === "42P01" ||
+    error.message?.includes("credit_requests") ||
     error.message?.includes("schema cache") ||
     false
   );

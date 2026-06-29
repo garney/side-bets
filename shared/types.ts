@@ -38,10 +38,16 @@ export type BetEntry = {
   id: string;
   sideBetId: string;
   userId: string;
+  userName: string;
+  userEmail: string | null;
   optionId: string;
   optionLabel: string;
   stakeCredits: number;
   createdAt: string;
+};
+
+export type SideBetDetail = SideBet & {
+  entries: BetEntry[];
 };
 
 export type CreditTransaction = {
@@ -55,6 +61,7 @@ export type CreditTransaction = {
 };
 
 export type RedemptionStatus = "pending" | "approved" | "rejected";
+export type CreditRequestStatus = "pending" | "approved" | "rejected";
 
 export type RedemptionRequest = {
   id: string;
@@ -64,6 +71,20 @@ export type RedemptionRequest = {
   amountCredits: number;
   status: RedemptionStatus;
   claimDetails: string;
+  adminNote: string | null;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+};
+
+export type CreditRequest = {
+  id: string;
+  userId: string;
+  userName: string;
+  userEmail: string | null;
+  amountCredits: number;
+  status: CreditRequestStatus;
+  requestReason: string;
   adminNote: string | null;
   reviewedBy: string | null;
   reviewedAt: string | null;

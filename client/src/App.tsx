@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { Bell, CheckCircle2, CircleDollarSign, LogOut, Plus, Search, ShieldCheck, Trophy, UserCircle2 } from "lucide-react";
+import { Bell, CheckCircle2, CircleDollarSign, LogOut, Plus, Search, ShieldCheck, Trophy, UserCircle2, X } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
-import type { AdminSummary, AdminUser, CreditTransaction, Profile, RedemptionRequest, SideBet } from "../../shared/types";
+import type { AdminSummary, AdminUser, CreditRequest, CreditTransaction, Profile, RedemptionRequest, SideBet, SideBetDetail } from "../../shared/types";
 import { api } from "./api";
 import { supabase } from "./supabase";
 
 type SessionState = "loading" | "signed-out" | "signed-in";
+type AppView = "side-bets" | "admin";
 
 const defaultForm = {
   title: "Max temperature in Sydney tomorrow",
@@ -20,45 +21,58 @@ export function App() {
   const [sessionState, setSessionState] = useState<SessionState>("loading");
   const [profile, setProfile] = useState<Profile | null>(null);
   const [sideBets, setSideBets] = useState<SideBet[]>([]);
+  const [selectedSideBetId, setSelectedSideBetId] = useState<string | null>(null);
+  const [selectedSideBet, setSelectedSideBet] = useState<SideBetDetail | null>(null);
+  const [selectedSideBetLoading, setSelectedSideBetLoading] = useState(false);
   const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
   const [redemptions, setRedemptions] = useState<RedemptionRequest[]>([]);
+  const [creditRequests, setCreditRequests] = useState<CreditRequest[]>([]);
   const [adminSummary, setAdminSummary] = useState<AdminSummary | null>(null);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [adminTransactions, setAdminTransactions] = useState<CreditTransaction[]>([]);
   const [adminRedemptions, setAdminRedemptions] = useState<RedemptionRequest[]>([]);
+  const [adminCreditRequests, setAdminCreditRequests] = useState<CreditRequest[]>([]);
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("all");
+  const [status, setStatus] = useState("open");
   const [form, setForm] = useState(defaultForm);
+  const [view, setView] = useState<AppView>("side-bets");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
   const activeBets = useMemo(() => sideBets.filter((bet) => bet.status === "open").length, [sideBets]);
 
   const refreshData = useCallback(async () => {
-    const [me, bets, wallet, walletRedemptions] = await Promise.all([
+    const [me, bets, wallet, walletRedemptions, walletCreditRequests] = await Promise.all([
       api.me(),
       api.sideBets(search, status),
       api.transactions(),
-      api.redemptions()
+      api.redemptions(),
+      api.creditRequests()
     ]);
     setProfile(me);
     setSideBets(bets);
     setTransactions(wallet);
     setRedemptions(walletRedemptions);
+    setCreditRequests(walletCreditRequests);
+    if (selectedSideBetId) {
+      setSelectedSideBet(await api.sideBet(selectedSideBetId));
+    }
 
     if (me.isAdmin) {
-      const [summary, users, adminTx, redemptionQueue] = await Promise.all([
+      const [summary, users, adminTx, redemptionQueue, creditRequestQueue] = await Promise.all([
         api.adminSummary(),
         api.adminUsers(),
         api.adminTransactions(),
-        api.adminRedemptions()
+        api.adminRedemptions(),
+        api.adminCreditRequests()
       ]);
       setAdminSummary(summary);
       setAdminUsers(users);
       setAdminTransactions(adminTx);
       setAdminRedemptions(redemptionQueue);
+      setAdminCreditRequests(creditRequestQueue);
     }
-  }, [search, status]);
+  }, [search, selectedSideBetId, status]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -76,6 +90,27 @@ export function App() {
     if (sessionState !== "signed-in") return;
     refreshData().catch((error) => setMessage(error.message));
   }, [sessionState, refreshData]);
+
+  useEffect(() => {
+    if (profile && !profile.isAdmin && view === "admin") {
+      setView("side-bets");
+    }
+  }, [profile, view]);
+
+  useEffect(() => {
+    if (!selectedSideBetId) return;
+
+    function closeOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") {
+        setSelectedSideBetId(null);
+        setSelectedSideBet(null);
+        setSelectedSideBetLoading(false);
+      }
+    }
+
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [selectedSideBetId]);
 
   useEffect(() => {
     let socket: Socket | null = null;
@@ -110,11 +145,16 @@ export function App() {
     await supabase.auth.signOut();
     setProfile(null);
     setSideBets([]);
+    setSelectedSideBetId(null);
+    setSelectedSideBet(null);
     setTransactions([]);
     setRedemptions([]);
+    setCreditRequests([]);
     setAdminSummary(null);
     setAdminUsers([]);
     setAdminRedemptions([]);
+    setAdminCreditRequests([]);
+    setView("side-bets");
     setSessionState("signed-out");
   }
 
@@ -130,6 +170,25 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function focusSideBet(id: string) {
+    setSelectedSideBetId(id);
+    setSelectedSideBetLoading(true);
+    setMessage("");
+    try {
+      setSelectedSideBet(await api.sideBet(id));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load side bet");
+    } finally {
+      setSelectedSideBetLoading(false);
+    }
+  }
+
+  function closeSideBetModal() {
+    setSelectedSideBetId(null);
+    setSelectedSideBet(null);
+    setSelectedSideBetLoading(false);
   }
 
   async function createBet(event: FormEvent) {
@@ -153,15 +212,15 @@ export function App() {
   }
 
   if (sessionState === "loading") {
-    return <main className="center-screen">Loading Side Bets...</main>;
+    return <main className="center-screen">Loading SideBet...</main>;
   }
 
   if (sessionState === "signed-out") {
     return (
       <main className="auth-screen">
         <section className="auth-panel">
-          <img className="auth-logo" src="/assets/sidebets.png" alt="SideBets" />
-          <h1 className="sr-only">Side Bets</h1>
+          <img className="auth-logo" src="/assets/sidebets.png" alt="SideBet" />
+          <h1 className="sr-only">SideBet</h1>
           <p>Create trusted prediction pools, buy in with credits, and settle results when the outcome is known.</p>
           <button className="primary-button" onClick={signIn}>
             <UserCircle2 size={18} />
@@ -178,21 +237,26 @@ export function App() {
       <header className="topbar">
         <div>
           <div className="brand-row">
-            <img className="brand-logo" src="/assets/sidebets.png" alt="SideBets" />
+            <img className="brand-logo" src="/assets/sidebets.png" alt="SideBet" />
           </div>
-          <span className="muted">Single-port app: web, API, and sockets together.</span>
+          {/* <span className="muted">Single-port app: web, API, and sockets together.</span> */}
         </div>
         <div className="topbar-actions">
+          {profile?.isAdmin ? (
+            <div className="view-switch" aria-label="View switcher">
+              <button className={view === "side-bets" ? "active" : ""} type="button" onClick={() => setView("side-bets")}>
+                Side bets
+              </button>
+              <button className={view === "admin" ? "active" : ""} type="button" onClick={() => setView("admin")}>
+                <ShieldCheck size={15} />
+                Admin
+              </button>
+            </div>
+          ) : null}
           <span className="balance">
             <CircleDollarSign size={17} />
             {profile?.creditsBalance.toFixed(2) ?? "0.00"} credits
           </span>
-          {profile?.isAdmin ? (
-            <span className="admin-pill">
-              <ShieldCheck size={15} />
-              Admin
-            </span>
-          ) : null}
           <button className="icon-button" onClick={signOut} aria-label="Sign out">
             <LogOut size={18} />
           </button>
@@ -201,113 +265,133 @@ export function App() {
 
       {message ? <div className="toast">{message}</div> : null}
 
-      <section className="metrics">
-        <Metric icon={<Bell size={18} />} label="Open bets" value={activeBets.toString()} />
-        <Metric icon={<Trophy size={18} />} label="Total bets" value={sideBets.length.toString()} />
-        <Metric icon={<CircleDollarSign size={18} />} label="Wallet" value={`${profile?.creditsBalance.toFixed(2) ?? "0.00"} cr`} />
-        <Metric icon={<CheckCircle2 size={18} />} label="Fee" value="0%" />
-      </section>
+      {view === "side-bets" ? (
+        <>
+          <section className="metrics">
+            <Metric icon={<Bell size={18} />} label="Open bets" value={activeBets.toString()} />
+            <Metric icon={<Trophy size={18} />} label="Total bets" value={sideBets.length.toString()} />
+            <Metric icon={<CircleDollarSign size={18} />} label="Wallet" value={`${profile?.creditsBalance.toFixed(2) ?? "0.00"} cr`} />
+            <Metric icon={<CheckCircle2 size={18} />} label="Fee" value="0%" />
+          </section>
 
-      <section className="workspace">
-        <aside className="filters">
-          <label className="search-box">
-            <Search size={17} />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search side bets" />
-          </label>
-          <label>
-            Status
-            <select value={status} onChange={(event) => setStatus(event.target.value)}>
-              <option value="all">All</option>
-              <option value="open">Open</option>
-              <option value="settled">Settled</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
-          </label>
-          <p className="muted">Credits are added by admins from the admin centre.</p>
-        </aside>
+          <section className="workspace">
+            <aside className="filters">
+              <label className="search-box">
+                <Search size={17} />
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search side bets" />
+              </label>
+              <label>
+                Status
+                <select value={status} onChange={(event) => setStatus(event.target.value)}>
+                  <option value="all">All</option>
+                  <option value="open">Open</option>
+                  <option value="settled">Settled</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
+              </label>
+              <p className="muted">Credits are added by admins from the admin centre.</p>
+            </aside>
 
-        <section className="bet-list" aria-label="Side bets">
-          <div className="section-heading">
-            <h2>All Side Bets</h2>
-            <span>{sideBets.length} visible</span>
-          </div>
-          <div className="table">
-            <div className="table-row table-head">
-              <span>Bet</span>
-              <span>Buy-in</span>
-              <span>Pot</span>
-              <span>Closes</span>
-              <span>Action</span>
-            </div>
-            {sideBets.map((bet) => (
-              <article className="table-row" key={bet.id}>
-                <div>
-                  <strong>{bet.title}</strong>
-                  <p>{bet.description}</p>
-                  <span className="muted">Manager: {bet.managerName}</span>
+            <div className="main-column">
+              <section className="bet-list" aria-label="Side bets">
+                <div className="section-heading">
+                  <h2>{status === "all" ? "All Side Bets" : `${status[0].toUpperCase()}${status.slice(1)} Side Bets`}</h2>
+                  <span>{sideBets.length} visible</span>
                 </div>
-                <span>{bet.buyInCredits} cr</span>
-                <span>{bet.potCredits.toFixed(2)} cr</span>
-                <span>{new Date(bet.closesAt).toLocaleString()}</span>
-                <BetActions bet={bet} busy={busy} onAction={withAction} canSettle={profile?.id === bet.managerId || Boolean(profile?.isAdmin)} />
-              </article>
-            ))}
-            {sideBets.length === 0 ? <div className="empty-state">No side bets match this view.</div> : null}
-          </div>
-        </section>
-
-        <aside className="create-panel">
-          <form onSubmit={createBet}>
-            <div className="section-heading">
-              <h2>Create</h2>
-              <Plus size={18} />
+                <div className="table">
+                  <div className="table-row table-head">
+                    <span>Bet</span>
+                    <span>Buy-in</span>
+                    <span>Pot</span>
+                    <span>Closes</span>
+                    <span>Action</span>
+                  </div>
+                  {sideBets.map((bet) => (
+                    <article className={`table-row ${selectedSideBetId === bet.id ? "selected" : ""}`} key={bet.id}>
+                      <div>
+                        <div className="bet-title-row">
+                          <strong>{bet.title}</strong>
+                          <button className="text-button" type="button" onClick={() => focusSideBet(bet.id)}>
+                            View
+                          </button>
+                        </div>
+                        <p>{bet.description}</p>
+                        <span className="muted">Manager: {bet.managerName}</span>
+                      </div>
+                      <span>{bet.buyInCredits} cr</span>
+                      <span>{bet.potCredits.toFixed(2)} cr</span>
+                      <span>{new Date(bet.closesAt).toLocaleString()}</span>
+                      <BetActions bet={bet} busy={busy} onAction={withAction} canSettle={profile?.id === bet.managerId || Boolean(profile?.isAdmin)} />
+                    </article>
+                  ))}
+              {sideBets.length === 0 ? <div className="empty-state">No side bets match this view.</div> : null}
             </div>
-            <label>
-              Title
-              <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
-            </label>
-            <label>
-              What is the bet about?
-              <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
-            </label>
-            <label>
-              Source URL
-              <input value={form.sourceUrl} onChange={(event) => setForm({ ...form, sourceUrl: event.target.value })} />
-            </label>
-            <div className="split-fields">
-              <label>
-                Buy-in
-                <input
-                  type="number"
-                  min="1"
-                  value={form.buyInCredits}
-                  onChange={(event) => setForm({ ...form, buyInCredits: Number(event.target.value) })}
-                />
-              </label>
-              <label>
-                Closes
-                <input type="datetime-local" value={form.closesAt} onChange={(event) => setForm({ ...form, closesAt: event.target.value })} />
-              </label>
+          </section>
             </div>
-            <label>
-              Options
-              <textarea value={form.options} onChange={(event) => setForm({ ...form, options: event.target.value })} />
-            </label>
-            <button className="primary-button" disabled={busy}>
-              Create side bet
-            </button>
-          </form>
 
-          <Wallet transactions={transactions} redemptions={redemptions} busy={busy} onAction={withAction} />
-        </aside>
-      </section>
+            <aside className="create-panel">
+              <form onSubmit={createBet}>
+                <div className="section-heading">
+                  <h2>Create</h2>
+                  <Plus size={18} />
+                </div>
+                <label>
+                  Title
+                  <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
+                </label>
+                <label>
+                  What is the bet about?
+                  <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+                </label>
+                <label>
+                  Source URL
+                  <input value={form.sourceUrl} onChange={(event) => setForm({ ...form, sourceUrl: event.target.value })} />
+                </label>
+                <div className="split-fields">
+                  <label>
+                    Buy-in
+                    <input
+                      type="number"
+                      min="1"
+                      value={form.buyInCredits}
+                      onChange={(event) => setForm({ ...form, buyInCredits: Number(event.target.value) })}
+                    />
+                  </label>
+                  <label>
+                    Closes
+                    <input type="datetime-local" value={form.closesAt} onChange={(event) => setForm({ ...form, closesAt: event.target.value })} />
+                  </label>
+                </div>
+                <label>
+                  Options
+                  <textarea value={form.options} onChange={(event) => setForm({ ...form, options: event.target.value })} />
+                </label>
+                <button className="primary-button" disabled={busy}>
+                  Create side bet
+                </button>
+              </form>
 
-      {profile?.isAdmin ? (
+              <Wallet transactions={transactions} redemptions={redemptions} creditRequests={creditRequests} busy={busy} onAction={withAction} />
+            </aside>
+          </section>
+          {selectedSideBetId ? (
+            <SideBetModal
+              bet={selectedSideBet}
+              loading={selectedSideBetLoading}
+              busy={busy}
+              onClose={closeSideBetModal}
+              onAction={withAction}
+              canSettle={profile?.id === selectedSideBet?.managerId || Boolean(profile?.isAdmin)}
+            />
+          ) : null}
+        </>
+      ) : profile?.isAdmin ? (
         <AdminCentre
           summary={adminSummary}
           users={adminUsers}
           transactions={adminTransactions}
           redemptions={adminRedemptions}
+          creditRequests={adminCreditRequests}
           busy={busy}
           onAction={withAction}
         />
@@ -323,6 +407,148 @@ function Metric({ icon, label, value }: { icon: ReactNode; label: string; value:
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+function SideBetModal({
+  bet,
+  loading,
+  busy,
+  canSettle,
+  onClose,
+  onAction
+}: {
+  bet: SideBetDetail | null;
+  loading: boolean;
+  busy: boolean;
+  canSettle: boolean;
+  onClose: () => void;
+  onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <div className="modal-panel" role="dialog" aria-modal="true" aria-label={bet ? `${bet.title} details` : "Side bet details"} onClick={(event) => event.stopPropagation()}>
+        <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close side bet details">
+          <X size={18} />
+        </button>
+        <SideBetFocusPanel bet={bet} loading={loading} busy={busy} canSettle={canSettle} onAction={onAction} />
+      </div>
+    </div>
+  );
+}
+
+function SideBetFocusPanel({
+  bet,
+  loading,
+  busy,
+  canSettle,
+  onAction
+}: {
+  bet: SideBetDetail | null;
+  loading: boolean;
+  busy: boolean;
+  canSettle: boolean;
+  onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+}) {
+  const optionStats = useMemo(() => {
+    if (!bet) return [];
+
+    return bet.options.map((option) => {
+      const entries = bet.entries.filter((entry) => entry.optionId === option.id);
+      const stakeCredits = entries.reduce((total, entry) => total + entry.stakeCredits, 0);
+      return {
+        ...option,
+        entries,
+        stakeCredits,
+        percent: bet.potCredits > 0 ? (stakeCredits / bet.potCredits) * 100 : 0
+      };
+    });
+  }, [bet]);
+
+  if (loading) {
+    return <section className="side-bet-focus empty-state">Loading side bet...</section>;
+  }
+
+  if (!bet) {
+    return <section className="side-bet-focus empty-state">No side bet selected.</section>;
+  }
+
+  const winningOption = bet.options.find((option) => option.id === bet.winningOptionId);
+
+  return (
+    <section className="side-bet-focus" aria-label={`${bet.title} details`}>
+      <div className="section-heading">
+        <div>
+          <h2>{bet.title}</h2>
+          <span>
+            {bet.status} · Manager: {bet.managerName}
+          </span>
+        </div>
+        <span>{bet.participantCount} guesses</span>
+      </div>
+
+      <p className="detail-copy">{bet.description}</p>
+      {bet.sourceUrl ? (
+        <a className="source-link" href={bet.sourceUrl} target="_blank" rel="noreferrer">
+          Source
+        </a>
+      ) : null}
+
+      <div className="detail-metrics">
+        <Metric icon={<CircleDollarSign size={18} />} label="Buy-in" value={`${bet.buyInCredits.toFixed(2)} cr`} />
+        <Metric icon={<Trophy size={18} />} label="Pot" value={`${bet.potCredits.toFixed(2)} cr`} />
+        <Metric icon={<CheckCircle2 size={18} />} label="Fee" value={`${bet.houseFeePercent}%`} />
+      </div>
+
+      <div className="detail-times">
+        <span>Starts {new Date(bet.startsAt).toLocaleString()}</span>
+        <span>Closes {new Date(bet.closesAt).toLocaleString()}</span>
+        {bet.settlesAt ? <span>Settled {new Date(bet.settlesAt).toLocaleString()}</span> : null}
+      </div>
+
+      <section className="option-breakdown">
+        <div className="section-heading">
+          <h2>Options</h2>
+          {winningOption ? <span>Winner: {winningOption.label}</span> : null}
+        </div>
+        {optionStats.map((option) => (
+          <article className="option-row" key={option.id}>
+            <div>
+              <strong>{option.label}</strong>
+              <span>
+                {option.entries.length} guesses · {option.stakeCredits.toFixed(2)} cr
+              </span>
+            </div>
+            <div className="option-bar" aria-hidden="true">
+              <span style={{ width: `${option.percent}%` }} />
+            </div>
+          </article>
+        ))}
+      </section>
+
+      <section className="guess-list">
+        <div className="section-heading">
+          <h2>Guesses</h2>
+          <span>{bet.entries.length} total</span>
+        </div>
+        {bet.entries.map((entry) => (
+          <article className="guess-row" key={entry.id}>
+            <div>
+              <strong>{entry.userName}</strong>
+              <span>{entry.userEmail ?? "No email"}</span>
+            </div>
+            <div>
+              <strong>{entry.optionLabel}</strong>
+              <span>{new Date(entry.createdAt).toLocaleString()}</span>
+            </div>
+            <strong>{entry.stakeCredits.toFixed(2)} cr</strong>
+          </article>
+        ))}
+        {bet.entries.length === 0 ? <p className="muted">No guesses yet.</p> : null}
+      </section>
+
+      <BetActions bet={bet} busy={busy} onAction={onAction} canSettle={canSettle} />
+    </section>
   );
 }
 
@@ -368,16 +594,33 @@ function BetActions({
 function Wallet({
   transactions,
   redemptions,
+  creditRequests,
   busy,
   onAction
 }: {
   transactions: CreditTransaction[];
   redemptions: RedemptionRequest[];
+  creditRequests: CreditRequest[];
   busy: boolean;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
 }) {
+  const [requestAmount, setRequestAmount] = useState(10);
+  const [requestReason, setRequestReason] = useState("");
   const [redeemAmount, setRedeemAmount] = useState(1);
   const [claimDetails, setClaimDetails] = useState("");
+
+  async function submitCreditRequest(event: FormEvent) {
+    event.preventDefault();
+    await onAction(
+      () =>
+        api.createCreditRequest({
+          amountCredits: Number(requestAmount),
+          requestReason
+        }),
+      "Credit request submitted"
+    );
+    setRequestReason("");
+  }
 
   async function requestRedemption(event: FormEvent) {
     event.preventDefault();
@@ -398,6 +641,27 @@ function Wallet({
         <h2>Wallet</h2>
         <span>Latest</span>
       </div>
+      <form className="credit-request-form" onSubmit={submitCreditRequest}>
+        <div className="section-heading">
+          <h2>Request Credits</h2>
+          <span>Admin approved</span>
+        </div>
+        <label>
+          Credits to request
+          <input min="1" max="10000" type="number" value={requestAmount} onChange={(event) => setRequestAmount(Number(event.target.value))} />
+        </label>
+        <label>
+          Reason
+          <textarea
+            value={requestReason}
+            onChange={(event) => setRequestReason(event.target.value)}
+            placeholder="Why do you need credits added?"
+          />
+        </label>
+        <button className="primary-button" disabled={busy || !requestReason.trim()}>
+          Request credits
+        </button>
+      </form>
       <form className="redemption-form" onSubmit={requestRedemption}>
         <div className="section-heading">
           <h2>Redeem Credits</h2>
@@ -419,6 +683,12 @@ function Wallet({
           Request redemption
         </button>
       </form>
+      {creditRequests.slice(0, 3).map((creditRequest) => (
+        <div className="transaction" key={creditRequest.id}>
+          <span>Credit request {creditRequest.status}</span>
+          <strong>{creditRequest.amountCredits.toFixed(2)} cr</strong>
+        </div>
+      ))}
       {redemptions.slice(0, 3).map((redemption) => (
         <div className="transaction" key={redemption.id}>
           <span>Redeem {redemption.status}</span>
@@ -441,6 +711,7 @@ function AdminCentre({
   users,
   transactions,
   redemptions,
+  creditRequests,
   busy,
   onAction
 }: {
@@ -448,6 +719,7 @@ function AdminCentre({
   users: AdminUser[];
   transactions: CreditTransaction[];
   redemptions: RedemptionRequest[];
+  creditRequests: CreditRequest[];
   busy: boolean;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
 }) {
@@ -473,6 +745,13 @@ function AdminCentre({
 
   async function reviewRedemption(id: string, status: "approved" | "rejected") {
     await onAction(() => api.adminReviewRedemption(id, { status }), status === "approved" ? "Redemption approved" : "Redemption rejected");
+  }
+
+  async function reviewCreditRequest(id: string, status: "approved" | "rejected") {
+    await onAction(
+      () => api.adminReviewCreditRequest(id, { status }),
+      status === "approved" ? "Credit request approved" : "Credit request rejected"
+    );
   }
 
   return (
@@ -515,6 +794,34 @@ function AdminCentre({
           Add credits
         </button>
       </form>
+      <section className="credit-request-queue">
+        <div className="section-heading">
+          <h2>Credit Requests</h2>
+          <span>{creditRequests.filter((creditRequest) => creditRequest.status === "pending").length} pending</span>
+        </div>
+        {creditRequests.slice(0, 8).map((creditRequest) => (
+          <article className="credit-request-item" key={creditRequest.id}>
+            <div>
+              <strong>
+                {creditRequest.userName} requests {creditRequest.amountCredits.toFixed(2)} cr
+              </strong>
+              <p>{creditRequest.requestReason}</p>
+              <span className={`status ${creditRequest.status}`}>{creditRequest.status}</span>
+            </div>
+            {creditRequest.status === "pending" ? (
+              <div className="row-actions">
+                <button disabled={busy} onClick={() => reviewCreditRequest(creditRequest.id, "approved")}>
+                  Approve
+                </button>
+                <button className="text-button danger" disabled={busy} onClick={() => reviewCreditRequest(creditRequest.id, "rejected")}>
+                  Reject
+                </button>
+              </div>
+            ) : null}
+          </article>
+        ))}
+        {creditRequests.length === 0 ? <p className="muted">No credit requests yet.</p> : null}
+      </section>
       <section className="redemption-queue">
         <div className="section-heading">
           <h2>Redemptions</h2>

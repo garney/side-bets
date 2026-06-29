@@ -121,6 +121,7 @@ button:disabled {
 
 .brand-row,
 .topbar-actions,
+.view-switch,
 .balance,
 .admin-pill,
 .metric,
@@ -140,6 +141,31 @@ button:disabled {
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.view-switch {
+  gap: 4px;
+  padding: 4px;
+  background: #f3f6f4;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+}
+
+.view-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: transparent;
+  color: #53615c;
+  font-weight: 800;
+}
+
+.view-switch button.active {
+  background: #173d3a;
+  color: #ffffff;
 }
 
 .balance,
@@ -167,6 +193,35 @@ button:disabled {
   background: #17211f;
   color: #ffffff;
   border-radius: 6px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(23, 33, 31, 0.52);
+}
+
+.modal-panel {
+  position: relative;
+  width: min(980px, 100%);
+  max-height: min(860px, calc(100vh - 48px));
+  overflow: auto;
+  background: #ffffff;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgba(23, 33, 31, 0.26);
+}
+
+.modal-close {
+  position: sticky;
+  top: 12px;
+  z-index: 1;
+  float: right;
+  margin: 12px 12px 0 0;
 }
 
 .toast {
@@ -231,6 +286,12 @@ button:disabled {
   top: 16px;
   display: grid;
   gap: 12px;
+}
+
+.main-column {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
 }
 
 label {
@@ -361,6 +422,23 @@ textarea:focus {
   line-height: 1.45;
 }
 
+.table-row.selected {
+  background: #f2faf7;
+  box-shadow: inset 3px 0 0 #176f66;
+}
+
+.bet-title-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.bet-title-row .text-button {
+  min-height: 30px;
+  padding: 0 6px;
+}
+
 .row-actions {
   grid-column: 1 / -1;
   gap: 8px;
@@ -395,6 +473,106 @@ textarea:focus {
   grid-column: 1 / -1;
   color: #176f66;
   font-weight: 800;
+}
+
+.side-bet-focus {
+  clear: both;
+  padding: 16px;
+}
+
+.side-bet-focus.empty-state {
+  color: #64716d;
+}
+
+.detail-copy {
+  margin: 0 0 10px;
+  color: #34413d;
+  line-height: 1.55;
+}
+
+.source-link {
+  display: inline-flex;
+  margin-bottom: 12px;
+  color: #176f66;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.detail-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.detail-metrics .metric {
+  min-height: 64px;
+}
+
+.detail-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.detail-times span {
+  border: 1px solid #dfe5dc;
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: #53615c;
+  font-size: 13px;
+}
+
+.option-breakdown,
+.guess-list {
+  margin-top: 16px;
+  border-top: 1px solid #e7ece8;
+  padding-top: 14px;
+}
+
+.option-row,
+.guess-row {
+  display: grid;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid #edf1ee;
+}
+
+.option-row {
+  grid-template-columns: minmax(0, 0.7fr) minmax(160px, 1fr);
+  align-items: center;
+}
+
+.option-row div:first-child,
+.guess-row div {
+  display: grid;
+  gap: 3px;
+}
+
+.option-row span,
+.guess-row span {
+  color: #64716d;
+  font-size: 13px;
+}
+
+.option-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: #eef2ef;
+  overflow: hidden;
+}
+
+.option-bar span {
+  display: block;
+  height: 100%;
+  min-width: 3px;
+  background: #10bda8;
+}
+
+.guess-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
 }
 
 .empty-state {
@@ -452,13 +630,16 @@ textarea:focus {
   gap: 12px;
 }
 
+.credit-request-form,
 .redemption-form,
 .credit-adjustment,
+.credit-request-queue,
 .redemption-queue,
 .admin-table {
   margin-top: 12px;
 }
 
+.credit-request-form,
 .redemption-form,
 .credit-adjustment {
   display: grid;
@@ -469,6 +650,7 @@ textarea:focus {
   background: #fbfcfa;
 }
 
+.credit-request-queue,
 .redemption-queue {
   display: grid;
   gap: 10px;
@@ -478,6 +660,7 @@ textarea:focus {
   background: #ffffff;
 }
 
+.credit-request-item,
 .redemption-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -487,6 +670,7 @@ textarea:focus {
   padding-top: 10px;
 }
 
+.credit-request-item p,
 .redemption-item p {
   margin: 5px 0 8px;
   color: #53615c;
@@ -591,6 +775,13 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .detail-metrics,
+  .option-row,
+  .guess-row {
+    grid-template-columns: 1fr;
+  }
+
+  .credit-request-item,
   .redemption-item {
     grid-template-columns: 1fr;
   }

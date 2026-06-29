@@ -13,6 +13,7 @@ This first version is intentionally simple: one Node process serves the React cl
 - Users join a side bet by selecting an option and paying the buy-in from their credit balance.
 - The manager, or an admin, settles the side bet by choosing the winning option.
 - Winners split the pot after the house fee. The current default house fee is `0%`.
+- Users can request credits, and admins approve or reject those requests before credits are added.
 - Admin users can view platform summaries, add credits to users, and inspect transaction history.
 - Users can request to redeem credits, and admins approve or reject those requests.
 
@@ -107,6 +108,7 @@ supabase/
   migrations/
     0001_initial_schema.sql
     0002_redemption_requests.sql
+    0003_credit_requests.sql
 
 Dockerfile
 docker-compose.yml
@@ -129,6 +131,8 @@ The first migration creates:
   Immutable-style transaction records for admin credit adjustments, buy-ins, payouts, fees, withdrawals, and future payment deposits.
 - `redemption_requests`
   User requests to exchange credits, including claim details and admin review status.
+- `credit_requests`
+  User requests for credits, including request reason and admin review status.
 
 The migrations also enable Row Level Security and add initial read/update policies. The server currently performs trusted writes using the service role key after validating the user's Supabase JWT.
 
@@ -193,6 +197,7 @@ Copy and run the migrations in order:
 ```text
 supabase/migrations/0001_initial_schema.sql
 supabase/migrations/0002_redemption_requests.sql
+supabase/migrations/0003_credit_requests.sql
 ```
 
 Run the query.
@@ -219,7 +224,7 @@ APIs & Services -> OAuth consent screen
 
 Create or configure the consent screen:
 
-- App name: `Side Bets`
+- App name: `SideBet`
 - User support email: your email
 - Developer contact email: your email
 
@@ -461,7 +466,7 @@ Restart the app after changing `.env`.
 
 This is an early scaffold. The following pieces are intentionally basic:
 
-- Credits can only be added by admins in this version.
+- Users can request credits, but credits are only added after admin approval.
 - Redemption requests reserve credits immediately and require admin review.
 - Real payment deposits are not implemented yet.
 - Withdrawals and admin adjustments need dedicated UI and stronger audit controls.
@@ -476,8 +481,8 @@ This is an early scaffold. The following pieces are intentionally basic:
 1. Finish Supabase + Google SSO setup.
 2. Log in locally and verify profile creation.
 3. Add yourself as an admin.
-4. Add credits to a user from the admin centre, then create and join a side bet.
-5. Add withdrawal and admin adjustment flows.
+4. Request credits as a user, approve the request from the admin centre, then create and join a side bet.
+5. Add withdrawal and richer admin adjustment flows.
 6. Add tests around wallet balance changes and settlement payout math.
 7. Add production payment integration when credits become real money.
 8. Add dispute handling or manager trust controls.
