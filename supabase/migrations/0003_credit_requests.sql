@@ -17,6 +17,20 @@ create index if not exists credit_requests_created_at_idx on public.credit_reque
 
 alter table public.credit_requests enable row level security;
 
+create or replace function public.is_admin(check_user_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.admin_users
+    where user_id = check_user_id
+  );
+$$;
+
 drop policy if exists "Users can read own credit requests" on public.credit_requests;
 create policy "Users can read own credit requests"
 on public.credit_requests

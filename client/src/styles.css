@@ -526,6 +526,7 @@ textarea:focus {
 
 .option-breakdown,
 .guess-list,
+.side-bet-create-form,
 .side-bet-edit-form,
 .rectification-form {
   margin-top: 16px;
@@ -533,6 +534,7 @@ textarea:focus {
   padding-top: 14px;
 }
 
+.side-bet-create-form,
 .side-bet-edit-form,
 .rectification-form {
   display: grid;
@@ -604,6 +606,7 @@ textarea:focus {
   gap: 16px;
 }
 
+.create-entry,
 .create-panel form {
   display: grid;
   gap: 12px;

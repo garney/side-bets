@@ -9,12 +9,13 @@ type SessionState = "loading" | "signed-out" | "signed-in";
 type AppView = "side-bets" | "admin";
 
 const defaultForm = {
-  title: "Max temperature in Sydney tomorrow",
-  description: "What will the maximum temperature in Sydney be tomorrow based on the BOM website?",
-  sourceUrl: "https://www.bom.gov.au/nsw/forecasts/sydney.shtml",
-  buyInCredits: 1,
-  closesAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
-  options: "Under 22\n22 to 25\nOver 25"
+  title: "Will volume exceed _M Yen on _ _",
+  description: "Will volume exceed _M Yen on Tuesday _\nSide Bet closes 11:30 am _\nwill be settled 10 am the next day",
+  sourceUrl: "https://mission-control-client.astro.space/login",
+  buyInCredits: "",
+  closesDate: "",
+  closesTime: "11:30",
+  options: "No\nYES"
 };
 
 export function App() {
@@ -35,6 +36,7 @@ export function App() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("open");
   const [form, setForm] = useState(defaultForm);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
   const [view, setView] = useState<AppView>("side-bets");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -98,19 +100,22 @@ export function App() {
   }, [profile, view]);
 
   useEffect(() => {
-    if (!selectedSideBetId) return;
+    if (!selectedSideBetId && !createModalOpen) return;
 
     function closeOnEscape(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
-        setSelectedSideBetId(null);
-        setSelectedSideBet(null);
-        setSelectedSideBetLoading(false);
+        if (selectedSideBetId) {
+          setSelectedSideBetId(null);
+          setSelectedSideBet(null);
+          setSelectedSideBetLoading(false);
+        }
+        setCreateModalOpen(false);
       }
     }
 
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [selectedSideBetId]);
+  }, [createModalOpen, selectedSideBetId]);
 
   useEffect(() => {
     let socket: Socket | null = null;
@@ -194,7 +199,16 @@ export function App() {
   async function createBet(event: FormEvent) {
     event.preventDefault();
     await withAction(async () => {
+      if (!form.buyInCredits || !form.closesDate || !form.closesTime) {
+        throw new Error("Add a buy-in amount, close date, and close time before creating the side bet");
+      }
+
       const now = new Date();
+      const closesAt = new Date(`${form.closesDate}T${form.closesTime}`);
+      if (Number.isNaN(closesAt.getTime())) {
+        throw new Error("Close date or time is invalid");
+      }
+
       await api.createSideBet({
         title: form.title,
         description: form.description,
@@ -202,12 +216,13 @@ export function App() {
         buyInCredits: Number(form.buyInCredits),
         houseFeePercent: 0,
         startsAt: now.toISOString(),
-        closesAt: new Date(form.closesAt).toISOString(),
+        closesAt: closesAt.toISOString(),
         options: form.options
           .split("\n")
           .map((option) => option.trim())
           .filter(Boolean)
       });
+      setCreateModalOpen(false);
     }, "Side bet created");
   }
 
@@ -330,50 +345,22 @@ export function App() {
             </div>
 
             <aside className="create-panel">
-              <form onSubmit={createBet}>
+              <section className="create-entry">
                 <div className="section-heading">
                   <h2>Create</h2>
                   <Plus size={18} />
                 </div>
-                <label>
-                  Title
-                  <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
-                </label>
-                <label>
-                  What is the bet about?
-                  <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
-                </label>
-                <label>
-                  Source URL
-                  <input value={form.sourceUrl} onChange={(event) => setForm({ ...form, sourceUrl: event.target.value })} />
-                </label>
-                <div className="split-fields">
-                  <label>
-                    Buy-in
-                    <input
-                      type="number"
-                      min="1"
-                      value={form.buyInCredits}
-                      onChange={(event) => setForm({ ...form, buyInCredits: Number(event.target.value) })}
-                    />
-                  </label>
-                  <label>
-                    Closes
-                    <input type="datetime-local" value={form.closesAt} onChange={(event) => setForm({ ...form, closesAt: event.target.value })} />
-                  </label>
-                </div>
-                <label>
-                  Options
-                  <textarea value={form.options} onChange={(event) => setForm({ ...form, options: event.target.value })} />
-                </label>
-                <button className="primary-button" disabled={busy}>
+                <button className="primary-button" type="button" onClick={() => setCreateModalOpen(true)}>
                   Create side bet
                 </button>
-              </form>
+              </section>
 
               <Wallet transactions={transactions} redemptions={redemptions} creditRequests={creditRequests} busy={busy} onAction={withAction} />
             </aside>
           </section>
+          {createModalOpen ? (
+            <CreateSideBetModal form={form} busy={busy} onClose={() => setCreateModalOpen(false)} onSubmit={createBet} onChange={setForm} />
+          ) : null}
           {selectedSideBetId ? (
             <SideBetModal
               bet={selectedSideBet}
@@ -408,6 +395,75 @@ function Metric({ icon, label, value }: { icon: ReactNode; label: string; value:
       {icon}
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function CreateSideBetModal({
+  form,
+  busy,
+  onClose,
+  onSubmit,
+  onChange
+}: {
+  form: typeof defaultForm;
+  busy: boolean;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => Promise<void>;
+  onChange: (form: typeof defaultForm) => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <div className="modal-panel" role="dialog" aria-modal="true" aria-label="Create side bet" onClick={(event) => event.stopPropagation()}>
+        <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close create side bet">
+          <X size={18} />
+        </button>
+        <form className="side-bet-create-form" onSubmit={onSubmit}>
+          <div className="section-heading">
+            <h2>Create Side Bet</h2>
+            <span>Draft details</span>
+          </div>
+          <label>
+            Title
+            <input value={form.title} onChange={(event) => onChange({ ...form, title: event.target.value })} />
+          </label>
+          <label>
+            What is the bet about?
+            <textarea value={form.description} onChange={(event) => onChange({ ...form, description: event.target.value })} />
+          </label>
+          <label>
+            Source URL
+            <input value={form.sourceUrl} onChange={(event) => onChange({ ...form, sourceUrl: event.target.value })} />
+          </label>
+          <div className="split-fields">
+            <label>
+              Buy-in
+              <input
+                type="number"
+                min="1"
+                value={form.buyInCredits}
+                onChange={(event) => onChange({ ...form, buyInCredits: event.target.value })}
+                placeholder="Credits"
+              />
+            </label>
+            <label>
+              Close date
+              <input type="date" value={form.closesDate} onChange={(event) => onChange({ ...form, closesDate: event.target.value })} />
+            </label>
+          </div>
+          <label>
+            Close time
+            <input type="time" value={form.closesTime} onChange={(event) => onChange({ ...form, closesTime: event.target.value })} />
+          </label>
+          <label>
+            Options
+            <textarea value={form.options} onChange={(event) => onChange({ ...form, options: event.target.value })} />
+          </label>
+          <button className="primary-button" disabled={busy || !form.buyInCredits || !form.closesDate || !form.closesTime}>
+            Create side bet
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
