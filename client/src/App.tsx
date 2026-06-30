@@ -7,6 +7,10 @@ import { supabase } from "./supabase";
 
 type SessionState = "loading" | "signed-out" | "signed-in";
 type AppView = "side-bets" | "admin";
+type PendingSettlement = {
+  bet: SideBet;
+  optionId: string;
+};
 
 const defaultForm = {
   title: "Will volume exceed _M Yen on _ _",
@@ -37,6 +41,7 @@ export function App() {
   const [status, setStatus] = useState("open");
   const [form, setForm] = useState(defaultForm);
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [pendingSettlement, setPendingSettlement] = useState<PendingSettlement | null>(null);
   const [view, setView] = useState<AppView>("side-bets");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -100,7 +105,7 @@ export function App() {
   }, [profile, view]);
 
   useEffect(() => {
-    if (!selectedSideBetId && !createModalOpen) return;
+    if (!selectedSideBetId && !createModalOpen && !pendingSettlement) return;
 
     function closeOnEscape(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
@@ -110,12 +115,13 @@ export function App() {
           setSelectedSideBetLoading(false);
         }
         setCreateModalOpen(false);
+        setPendingSettlement(null);
       }
     }
 
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [createModalOpen, selectedSideBetId]);
+  }, [createModalOpen, pendingSettlement, selectedSideBetId]);
 
   useEffect(() => {
     let socket: Socket | null = null;
@@ -336,7 +342,13 @@ export function App() {
                       <span>{bet.buyInCredits} cr</span>
                       <span>{bet.potCredits.toFixed(2)} cr</span>
                       <span>{new Date(bet.closesAt).toLocaleString()}</span>
-                      <BetActions bet={bet} busy={busy} onAction={withAction} canSettle={profile?.id === bet.managerId || Boolean(profile?.isAdmin)} />
+                      <BetActions
+                        bet={bet}
+                        busy={busy}
+                        onAction={withAction}
+                        canSettle={profile?.id === bet.managerId || Boolean(profile?.isAdmin)}
+                        onSettleRequest={setPendingSettlement}
+                      />
                     </article>
                   ))}
               {sideBets.length === 0 ? <div className="empty-state">No side bets match this view.</div> : null}
@@ -368,9 +380,24 @@ export function App() {
               busy={busy}
               onClose={closeSideBetModal}
               onAction={withAction}
+              onSettleRequest={setPendingSettlement}
               canSettle={profile?.id === selectedSideBet?.managerId || Boolean(profile?.isAdmin)}
               canEdit={profile?.id === selectedSideBet?.managerId}
               canRectify={Boolean(profile?.isAdmin)}
+            />
+          ) : null}
+          {pendingSettlement ? (
+            <SettleConfirmationModal
+              settlement={pendingSettlement}
+              busy={busy}
+              onClose={() => setPendingSettlement(null)}
+              onConfirm={async () => {
+                await withAction(
+                  () => api.settleSideBet(pendingSettlement.bet.id, pendingSettlement.optionId),
+                  `Side bet settled with ${pendingSettlement.bet.options.find((option) => option.id === pendingSettlement.optionId)?.label ?? "selected result"}`
+                );
+                setPendingSettlement(null);
+              }}
             />
           ) : null}
         </>
@@ -468,6 +495,52 @@ function CreateSideBetModal({
   );
 }
 
+function SettleConfirmationModal({
+  settlement,
+  busy,
+  onClose,
+  onConfirm
+}: {
+  settlement: PendingSettlement;
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const selectedOption = settlement.bet.options.find((option) => option.id === settlement.optionId);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <div className="confirm-modal" role="dialog" aria-modal="true" aria-label="Confirm side bet settlement" onClick={(event) => event.stopPropagation()}>
+        <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close settlement confirmation">
+          <X size={18} />
+        </button>
+        <section className="settlement-confirmation">
+          <div className="section-heading">
+            <h2>Confirm Settlement</h2>
+            <span>{settlement.bet.participantCount} guesses</span>
+          </div>
+          <p className="detail-copy">{settlement.bet.title}</p>
+          <div className="selected-result">
+            <span>Selected result</span>
+            <strong>{selectedOption?.label ?? "Unknown option"}</strong>
+          </div>
+          <p className="muted">
+            This will settle the side bet with the selected result, distribute the pot to matching guesses, and mark the side bet as settled.
+          </p>
+          <div className="confirm-actions">
+            <button className="text-button" type="button" disabled={busy} onClick={onClose}>
+              Cancel
+            </button>
+            <button className="primary-button" type="button" disabled={busy || !selectedOption} onClick={onConfirm}>
+              Settle with {selectedOption?.label ?? "selected result"}
+            </button>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
 function SideBetModal({
   bet,
   loading,
@@ -476,7 +549,8 @@ function SideBetModal({
   canEdit,
   canRectify,
   onClose,
-  onAction
+  onAction,
+  onSettleRequest
 }: {
   bet: SideBetDetail | null;
   loading: boolean;
@@ -486,6 +560,7 @@ function SideBetModal({
   canRectify: boolean;
   onClose: () => void;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+  onSettleRequest: (settlement: PendingSettlement) => void;
 }) {
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
@@ -493,7 +568,16 @@ function SideBetModal({
         <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close side bet details">
           <X size={18} />
         </button>
-        <SideBetFocusPanel bet={bet} loading={loading} busy={busy} canSettle={canSettle} canEdit={canEdit} canRectify={canRectify} onAction={onAction} />
+        <SideBetFocusPanel
+          bet={bet}
+          loading={loading}
+          busy={busy}
+          canSettle={canSettle}
+          canEdit={canEdit}
+          canRectify={canRectify}
+          onAction={onAction}
+          onSettleRequest={onSettleRequest}
+        />
       </div>
     </div>
   );
@@ -506,7 +590,8 @@ function SideBetFocusPanel({
   canSettle,
   canEdit,
   canRectify,
-  onAction
+  onAction,
+  onSettleRequest
 }: {
   bet: SideBetDetail | null;
   loading: boolean;
@@ -515,6 +600,7 @@ function SideBetFocusPanel({
   canEdit: boolean;
   canRectify: boolean;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+  onSettleRequest: (settlement: PendingSettlement) => void;
 }) {
   const optionStats = useMemo(() => {
     if (!bet) return [];
@@ -614,7 +700,7 @@ function SideBetFocusPanel({
       </section>
 
       {canEdit && bet.status === "open" ? <EditSideBetForm bet={bet} busy={busy} onAction={onAction} /> : null}
-      <BetActions bet={bet} busy={busy} onAction={onAction} canSettle={canSettle} />
+      <BetActions bet={bet} busy={busy} onAction={onAction} canSettle={canSettle} onSettleRequest={onSettleRequest} />
       {canRectify && bet.status === "settled" ? <RectifySettlementForm bet={bet} busy={busy} onAction={onAction} /> : null}
     </section>
   );
@@ -765,12 +851,14 @@ function BetActions({
   bet,
   busy,
   canSettle,
-  onAction
+  onAction,
+  onSettleRequest
 }: {
   bet: SideBet;
   busy: boolean;
   canSettle: boolean;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+  onSettleRequest: (settlement: PendingSettlement) => void;
 }) {
   const [optionId, setOptionId] = useState(bet.options[0]?.id ?? "");
 
@@ -792,7 +880,7 @@ function BetActions({
         Join
       </button>
       {canSettle ? (
-        <button className="text-button" disabled={busy} onClick={() => onAction(() => api.settleSideBet(bet.id, optionId), "Side bet settled")}>
+        <button className="text-button" disabled={busy || !optionId} onClick={() => onSettleRequest({ bet, optionId })}>
           Settle
         </button>
       ) : null}

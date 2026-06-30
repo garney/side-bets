@@ -216,6 +216,17 @@ button:disabled {
   box-shadow: 0 24px 80px rgba(23, 33, 31, 0.26);
 }
 
+.confirm-modal {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  background: #ffffff;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgba(23, 33, 31, 0.26);
+}
+
 .modal-close {
   position: sticky;
   top: 12px;
@@ -478,6 +489,39 @@ textarea:focus {
 .side-bet-focus {
   clear: both;
   padding: 16px;
+}
+
+.settlement-confirmation {
+  clear: both;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.selected-result {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #ead8ad;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fffaf0;
+}
+
+.selected-result span {
+  color: #704f05;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.selected-result strong {
+  font-size: 24px;
+}
+
+.confirm-actions {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
 }
 
 .side-bet-focus.empty-state {
