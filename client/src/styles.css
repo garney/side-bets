@@ -582,6 +582,29 @@ textarea:focus {
   padding: 0 6px;
 }
 
+.choice-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  border: 1px solid #b8d8cf;
+  border-radius: 6px;
+  background: #eefaf6;
+  color: #0d5a53;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.choice-label strong {
+  color: #13211f;
+}
+
+.choice-label.compact {
+  margin-top: 8px;
+  padding: 5px 8px;
+}
+
 .row-actions {
   grid-column: 1 / -1;
   gap: 8px;
@@ -615,6 +638,11 @@ textarea:focus {
 .status.settled {
   grid-column: 1 / -1;
   color: #176f66;
+  font-weight: 800;
+}
+
+.status.closed {
+  color: #5f6b67;
   font-weight: 800;
 }
 

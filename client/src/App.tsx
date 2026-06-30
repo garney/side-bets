@@ -52,38 +52,58 @@ export function App() {
 
   const activeBets = useMemo(() => sideBets.filter((bet) => bet.status === "open").length, [sideBets]);
 
+  const refreshSideBetList = useCallback(async () => {
+    setSideBets(await api.sideBets(search, status));
+  }, [search, status]);
+
+  const refreshSelectedSideBet = useCallback(async () => {
+    if (!selectedSideBetId) return;
+    setSelectedSideBet(await api.sideBet(selectedSideBetId));
+  }, [selectedSideBetId]);
+
+  const refreshWalletData = useCallback(async () => {
+    const [me, wallet, walletRedemptions, walletCreditRequests] = await Promise.all([api.me(), api.transactions(), api.redemptions(), api.creditRequests()]);
+    setProfile(me);
+    setTransactions(wallet);
+    setRedemptions(walletRedemptions);
+    setCreditRequests(walletCreditRequests);
+  }, []);
+
+  const refreshAdminData = useCallback(async () => {
+    const [summary, users, adminTx, redemptionQueue, creditRequestQueue] = await Promise.all([
+      api.adminSummary(),
+      api.adminUsers(),
+      api.adminTransactions(),
+      api.adminRedemptions(),
+      api.adminCreditRequests()
+    ]);
+    setAdminSummary(summary);
+    setAdminUsers(users);
+    setAdminTransactions(adminTx);
+    setAdminRedemptions(redemptionQueue);
+    setAdminCreditRequests(creditRequestQueue);
+  }, []);
+
   const refreshData = useCallback(async () => {
-    const [me, bets, wallet, walletRedemptions, walletCreditRequests] = await Promise.all([
+    const [me, bets, wallet, walletRedemptions, walletCreditRequests, selectedBet] = await Promise.all([
       api.me(),
       api.sideBets(search, status),
       api.transactions(),
       api.redemptions(),
-      api.creditRequests()
+      api.creditRequests(),
+      selectedSideBetId ? api.sideBet(selectedSideBetId) : Promise.resolve(null)
     ]);
     setProfile(me);
     setSideBets(bets);
     setTransactions(wallet);
     setRedemptions(walletRedemptions);
     setCreditRequests(walletCreditRequests);
-    if (selectedSideBetId) {
-      setSelectedSideBet(await api.sideBet(selectedSideBetId));
-    }
+    setSelectedSideBet(selectedBet);
 
     if (me.isAdmin) {
-      const [summary, users, adminTx, redemptionQueue, creditRequestQueue] = await Promise.all([
-        api.adminSummary(),
-        api.adminUsers(),
-        api.adminTransactions(),
-        api.adminRedemptions(),
-        api.adminCreditRequests()
-      ]);
-      setAdminSummary(summary);
-      setAdminUsers(users);
-      setAdminTransactions(adminTx);
-      setAdminRedemptions(redemptionQueue);
-      setAdminCreditRequests(creditRequestQueue);
+      await refreshAdminData();
     }
-  }, [search, selectedSideBetId, status]);
+  }, [refreshAdminData, search, selectedSideBetId, status]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -140,8 +160,25 @@ export function App() {
       if (!data.session?.access_token) return;
 
       socket = io("/", { auth: { token: data.session.access_token } });
-      socket.on("side-bet:changed", () => {
-        refreshData().catch((error) => setMessage(error.message));
+      if (selectedSideBetId) {
+        socket.emit("side-bet:watch", { betId: selectedSideBetId });
+      }
+
+      socket.on("side-bet:changed", (payload: { betId?: string }) => {
+        refreshSideBetList().catch((error) => setMessage(error.message));
+        if (payload.betId && payload.betId === selectedSideBetId) {
+          refreshSelectedSideBet().catch((error) => setMessage(error.message));
+        }
+      });
+
+      socket.on("wallet:changed", () => {
+        refreshWalletData().catch((error) => setMessage(error.message));
+      });
+
+      socket.on("admin:changed", () => {
+        if (profile?.isAdmin) {
+          refreshAdminData().catch((error) => setMessage(error.message));
+        }
       });
       socket.on("chat:message", (message: ChatMessage) => {
         setChatMessages((current) => {
@@ -156,9 +193,12 @@ export function App() {
     }
 
     return () => {
+      if (socket && selectedSideBetId) {
+        socket.emit("side-bet:unwatch", { betId: selectedSideBetId });
+      }
       socket?.disconnect();
     };
-  }, [sessionState, refreshData]);
+  }, [profile?.isAdmin, refreshAdminData, refreshSelectedSideBet, refreshSideBetList, refreshWalletData, selectedSideBetId, sessionState]);
 
   async function signIn() {
     await supabase.auth.signInWithOAuth({
@@ -374,6 +414,7 @@ export function App() {
                         </div>
                         <p>{bet.description}</p>
                         <span className="muted">Manager: {bet.managerName}</span>
+                        {bet.currentUserEntry ? <ChoiceLabel label={bet.currentUserEntry.optionLabel} compact /> : null}
                       </div>
                       <span>{bet.buyInCredits} cr</span>
                       <span>{bet.potCredits.toFixed(2)} cr</span>
@@ -756,6 +797,7 @@ function SideBetFocusPanel({
         </div>
         <span>{bet.participantCount} guesses</span>
       </div>
+      {bet.currentUserEntry ? <ChoiceLabel label={bet.currentUserEntry.optionLabel} /> : null}
 
       <p className="detail-copy">{bet.description}</p>
       {bet.sourceUrl ? (
@@ -922,6 +964,18 @@ function toDatetimeLocalValue(value: string) {
   return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
 }
 
+function isClosedForEntries(bet: SideBet) {
+  return bet.status !== "open" || new Date(bet.closesAt).getTime() <= Date.now();
+}
+
+function ChoiceLabel({ label, compact = false }: { label: string; compact?: boolean }) {
+  return (
+    <span className={compact ? "choice-label compact" : "choice-label"}>
+      Your choice <strong>{label}</strong>
+    </span>
+  );
+}
+
 function RectifySettlementForm({
   bet,
   busy,
@@ -978,11 +1032,39 @@ function BetActions({
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
   onSettleRequest: (settlement: PendingSettlement) => void;
 }) {
-  const [optionId, setOptionId] = useState(bet.options[0]?.id ?? "");
+  const [optionId, setOptionId] = useState(bet.currentUserEntry?.optionId ?? bet.options[0]?.id ?? "");
+  const entriesClosed = isClosedForEntries(bet);
+  const selectedOption = bet.options.find((option) => option.id === optionId);
+
+  useEffect(() => {
+    setOptionId(bet.currentUserEntry?.optionId ?? bet.options[0]?.id ?? "");
+  }, [bet.id, bet.currentUserEntry?.optionId, bet.options]);
 
   if (bet.status === "settled") {
     const winner = bet.options.find((option) => option.id === bet.winningOptionId);
     return <span className="status settled">{winner?.label ?? "Settled"}</span>;
+  }
+
+  if (entriesClosed) {
+    return (
+      <div className="row-actions">
+        {bet.currentUserEntry ? <ChoiceLabel label={bet.currentUserEntry.optionLabel} /> : <span className="status closed">Closed</span>}
+        {canSettle ? (
+          <>
+            <select value={optionId} onChange={(event) => setOptionId(event.target.value)} aria-label="Settlement result">
+              {bet.options.map((option) => (
+                <option value={option.id} key={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <button className="text-button" disabled={busy || !optionId} onClick={() => onSettleRequest({ bet, optionId })}>
+              Settle
+            </button>
+          </>
+        ) : null}
+      </div>
+    );
   }
 
   return (
@@ -994,8 +1076,16 @@ function BetActions({
           </option>
         ))}
       </select>
-      <button disabled={busy || bet.status !== "open"} onClick={() => onAction(() => api.joinSideBet(bet.id, optionId), "Joined side bet")}>
-        Join
+      <button
+        disabled={busy || bet.status !== "open" || !optionId || optionId === bet.currentUserEntry?.optionId}
+        onClick={() =>
+          onAction(
+            () => api.joinSideBet(bet.id, optionId),
+            bet.currentUserEntry ? `Choice changed to ${selectedOption?.label ?? "selected option"}` : "Joined side bet"
+          )
+        }
+      >
+        {bet.currentUserEntry ? "Change" : "Join"}
       </button>
       {canSettle ? (
         <button className="text-button" disabled={busy || !optionId} onClick={() => onSettleRequest({ bet, optionId })}>
