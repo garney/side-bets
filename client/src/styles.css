@@ -837,6 +837,12 @@ textarea:focus {
     flex-direction: column;
   }
 
+  .row-actions select {
+    max-width: none;
+    min-height: 42px;
+    flex: 0 0 auto;
+  }
+
   .split-fields {
     grid-template-columns: 1fr;
   }
