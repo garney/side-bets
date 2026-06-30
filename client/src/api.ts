@@ -1,6 +1,7 @@
 import type {
   AdminSummary,
   AdminUser,
+  ChatMessage,
   CreditRequest,
   CreditRequestStatus,
   CreditTransaction,
@@ -51,6 +52,15 @@ function formatApiError(error: unknown, status: number) {
 
 export const api = {
   me: () => apiFetch<Profile>("/me"),
+  chatMessages: (room: "general" | "side_bet" = "general", sideBetId?: string) =>
+    apiFetch<ChatMessage[]>(
+      `/chat/messages?room=${encodeURIComponent(room)}${sideBetId ? `&sideBetId=${encodeURIComponent(sideBetId)}` : ""}`
+    ),
+  createChatMessage: (payload: { body: string; room?: "general" | "side_bet"; sideBetId?: string | null }) =>
+    apiFetch<ChatMessage>("/chat/messages", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
   sideBets: (search: string, status: string) =>
     apiFetch<SideBet[]>(`/side-bets?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`),
   sideBet: (id: string) => apiFetch<SideBetDetail>(`/side-bets/${id}`),

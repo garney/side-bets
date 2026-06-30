@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { Bell, CheckCircle2, CircleDollarSign, LogOut, Plus, Search, ShieldCheck, Trophy, UserCircle2, X } from "lucide-react";
+import { Bell, CheckCircle2, CircleDollarSign, LogOut, MessageCircle, Plus, Search, Send, ShieldCheck, Trophy, UserCircle2, X } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
-import type { AdminSummary, AdminUser, CreditRequest, CreditTransaction, Profile, RedemptionRequest, SideBet, SideBetDetail } from "../../shared/types";
+import type { AdminSummary, AdminUser, ChatMessage, CreditRequest, CreditTransaction, Profile, RedemptionRequest, SideBet, SideBetDetail } from "../../shared/types";
 import { api } from "./api";
 import { supabase } from "./supabase";
 
@@ -42,6 +42,10 @@ export function App() {
   const [form, setForm] = useState(defaultForm);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [pendingSettlement, setPendingSettlement] = useState<PendingSettlement | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
   const [view, setView] = useState<AppView>("side-bets");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -124,6 +128,11 @@ export function App() {
   }, [createModalOpen, pendingSettlement, selectedSideBetId]);
 
   useEffect(() => {
+    if (sessionState !== "signed-in") return;
+    api.chatMessages("general").then(setChatMessages).catch((error) => setMessage(error.message));
+  }, [sessionState]);
+
+  useEffect(() => {
     let socket: Socket | null = null;
 
     async function connectSocket() {
@@ -133,6 +142,12 @@ export function App() {
       socket = io("/", { auth: { token: data.session.access_token } });
       socket.on("side-bet:changed", () => {
         refreshData().catch((error) => setMessage(error.message));
+      });
+      socket.on("chat:message", (message: ChatMessage) => {
+        setChatMessages((current) => {
+          if (current.some((candidate) => candidate.id === message.id)) return current;
+          return [...current, message].slice(-50);
+        });
       });
     }
 
@@ -165,6 +180,9 @@ export function App() {
     setAdminUsers([]);
     setAdminRedemptions([]);
     setAdminCreditRequests([]);
+    setChatOpen(false);
+    setChatMessages([]);
+    setChatDraft("");
     setView("side-bets");
     setSessionState("signed-out");
   }
@@ -230,6 +248,24 @@ export function App() {
       });
       setCreateModalOpen(false);
     }, "Side bet created");
+  }
+
+  async function sendChatMessage(event: FormEvent) {
+    event.preventDefault();
+    const body = chatDraft.trim();
+    if (!body) return;
+
+    setChatBusy(true);
+    setMessage("");
+    try {
+      const sent = await api.createChatMessage({ room: "general", body });
+      setChatMessages((current) => (current.some((message) => message.id === sent.id) ? current : [...current, sent].slice(-50)));
+      setChatDraft("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not send chat message");
+    } finally {
+      setChatBusy(false);
+    }
   }
 
   if (sessionState === "loading") {
@@ -412,7 +448,89 @@ export function App() {
           onAction={withAction}
         />
       ) : null}
+      <ChatWidget
+        open={chatOpen}
+        messages={chatMessages}
+        draft={chatDraft}
+        busy={chatBusy}
+        currentUserId={profile?.id ?? ""}
+        onToggle={() => setChatOpen((current) => !current)}
+        onClose={() => setChatOpen(false)}
+        onDraftChange={setChatDraft}
+        onSubmit={sendChatMessage}
+      />
     </main>
+  );
+}
+
+function ChatWidget({
+  open,
+  messages,
+  draft,
+  busy,
+  currentUserId,
+  onToggle,
+  onClose,
+  onDraftChange,
+  onSubmit
+}: {
+  open: boolean;
+  messages: ChatMessage[];
+  draft: string;
+  busy: boolean;
+  currentUserId: string;
+  onToggle: () => void;
+  onClose: () => void;
+  onDraftChange: (draft: string) => void;
+  onSubmit: (event: FormEvent) => Promise<void>;
+}) {
+  return (
+    <div className={open ? "chat-widget open" : "chat-widget"}>
+      {open ? (
+        <section className="chat-panel" aria-label="General chat">
+          <div className="chat-header">
+            <div>
+              <strong>General chat</strong>
+              <span>{messages.length} recent messages</span>
+            </div>
+            <button className="icon-button" type="button" onClick={onClose} aria-label="Close chat">
+              <X size={18} />
+            </button>
+          </div>
+          <div className="chat-messages">
+            {messages.map((message) => {
+              const mine = message.userId === currentUserId;
+              return (
+                <article className={mine ? "chat-message mine" : "chat-message"} key={message.id}>
+                  <div>
+                    <strong>{mine ? "You" : message.userName}</strong>
+                    <span>{new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                  </div>
+                  <p>{message.body}</p>
+                </article>
+              );
+            })}
+            {messages.length === 0 ? <p className="empty-state">No chat yet. Start the gloating.</p> : null}
+          </div>
+          <form className="chat-composer" onSubmit={onSubmit}>
+            <textarea
+              value={draft}
+              rows={2}
+              maxLength={1000}
+              onChange={(event) => onDraftChange(event.target.value)}
+              placeholder="Say something..."
+            />
+            <button className="icon-button" type="submit" disabled={busy || !draft.trim()} aria-label="Send message">
+              <Send size={18} />
+            </button>
+          </form>
+        </section>
+      ) : null}
+      <button className="chat-launcher" type="button" onClick={onToggle} aria-label={open ? "Close chat" : "Open chat"}>
+        <MessageCircle size={23} />
+        {messages.length > 0 ? <span>{messages.length}</span> : null}
+      </button>
+    </div>
   );
 }
 

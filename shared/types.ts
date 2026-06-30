@@ -91,6 +91,19 @@ export type CreditRequest = {
   createdAt: string;
 };
 
+export type ChatRoom = "general" | "side_bet";
+
+export type ChatMessage = {
+  id: string;
+  room: ChatRoom;
+  sideBetId: string | null;
+  userId: string;
+  userName: string;
+  userEmail: string | null;
+  body: string;
+  createdAt: string;
+};
+
 export type AdminSummary = {
   totalUsers: number;
   totalBets: number;

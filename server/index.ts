@@ -6,6 +6,7 @@ import helmet from "helmet";
 import { createApiRouter } from "./routes.js";
 import { assertServerConfig, config } from "./config.js";
 import { createSocketServer } from "./socket.js";
+import type { ChatMessage } from "../shared/types.js";
 
 assertServerConfig();
 
@@ -21,7 +22,16 @@ async function notifyBetChanged(betId: string) {
   io.to("side-bets").emit("side-bet:changed", { betId });
 }
 
-app.use("/api", createApiRouter(notifyBetChanged));
+async function notifyChatMessage(message: ChatMessage) {
+  if (message.room === "side_bet" && message.sideBetId) {
+    io.to(`chat:side-bet:${message.sideBetId}`).emit("chat:message", message);
+    return;
+  }
+
+  io.to("chat:general").emit("chat:message", message);
+}
+
+app.use("/api", createApiRouter({ notifyBetChanged, notifyChatMessage }));
 
 if (config.nodeEnv === "production") {
   const clientDist = path.resolve(process.cwd(), "client/dist");

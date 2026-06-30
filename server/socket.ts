@@ -29,7 +29,20 @@ export function createSocketServer(httpServer: HttpServer) {
 
   io.on("connection", (socket) => {
     socket.join("side-bets");
+    socket.join("chat:general");
     socket.emit("connected", { userId: socket.data.userId });
+
+    socket.on("chat:watch", (payload: { sideBetId?: string }) => {
+      if (typeof payload?.sideBetId === "string") {
+        socket.join(`chat:side-bet:${payload.sideBetId}`);
+      }
+    });
+
+    socket.on("chat:unwatch", (payload: { sideBetId?: string }) => {
+      if (typeof payload?.sideBetId === "string") {
+        socket.leave(`chat:side-bet:${payload.sideBetId}`);
+      }
+    });
   });
 
   return io;

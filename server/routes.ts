@@ -5,6 +5,8 @@ import type {
   AdminSummary,
   AdminUser,
   BetOption,
+  ChatMessage,
+  ChatRoom,
   CreditRequest,
   CreditRequestStatus,
   CreditTransaction,
@@ -73,7 +75,18 @@ const updateCreditRequestSchema = z.object({
   adminNote: z.string().max(1000).optional()
 });
 
-export function createApiRouter(notifyBetChanged: (betId: string) => Promise<void>) {
+const chatMessageSchema = z.object({
+  room: z.enum(["general", "side_bet"]).default("general"),
+  sideBetId: z.string().uuid().nullable().optional(),
+  body: z.string().trim().min(1).max(1000)
+});
+
+type RealtimeNotifier = {
+  notifyBetChanged: (betId: string) => Promise<void>;
+  notifyChatMessage: (message: ChatMessage) => Promise<void>;
+};
+
+export function createApiRouter(realtime: RealtimeNotifier) {
   const router = Router();
 
   router.get("/health", (_req, res) => {
@@ -105,6 +118,86 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       creditsBalance: Number(data.credits_balance),
       isAdmin: user.isAdmin
     });
+  });
+
+  router.get("/chat/messages", requireAuth, async (req, res) => {
+    const room = String(req.query.room ?? "general") as ChatRoom;
+    const sideBetId = typeof req.query.sideBetId === "string" ? req.query.sideBetId : null;
+
+    if (room !== "general" && room !== "side_bet") {
+      res.status(400).json({ error: "Invalid chat room" });
+      return;
+    }
+
+    let query = supabaseAdmin
+      .from("chat_messages")
+      .select("*, profiles!chat_messages_user_id_fkey(display_name, email)")
+      .eq("room", room)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (room === "side_bet") {
+      if (!sideBetId) {
+        res.status(400).json({ error: "sideBetId is required for side bet chat" });
+        return;
+      }
+      query = query.eq("side_bet_id", sideBetId);
+    } else {
+      query = query.is("side_bet_id", null);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      if (isMissingChatMessagesTable(error)) {
+        res.json([]);
+        return;
+      }
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.json(data.map(mapChatMessage).reverse());
+  });
+
+  router.post("/chat/messages", requireAuth, async (req, res) => {
+    const parsed = chatMessageSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const user = (req as AuthedRequest).user;
+    const room = parsed.data.room;
+    const sideBetId = room === "side_bet" ? parsed.data.sideBetId : null;
+
+    if (room === "side_bet" && !sideBetId) {
+      res.status(400).json({ error: "sideBetId is required for side bet chat" });
+      return;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("chat_messages")
+      .insert({
+        room,
+        side_bet_id: sideBetId,
+        user_id: user.id,
+        body: parsed.data.body
+      })
+      .select("*, profiles!chat_messages_user_id_fkey(display_name, email)")
+      .single();
+
+    if (error) {
+      if (isMissingChatMessagesTable(error)) {
+        res.status(503).json({ error: "Chat messages are not set up yet. Run supabase/migrations/0004_chat_messages.sql." });
+        return;
+      }
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    const message = mapChatMessage(data);
+    await realtime.notifyChatMessage(message);
+    res.status(201).json(message);
   });
 
   router.get("/side-bets", requireAuth, async (req, res) => {
@@ -180,7 +273,7 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
-    await notifyBetChanged(data.id);
+    await realtime.notifyBetChanged(data.id);
     res.status(201).json(mapSideBet(data));
   });
 
@@ -250,7 +343,7 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
-    await notifyBetChanged(bet.id);
+    await realtime.notifyBetChanged(bet.id);
     res.json(mapSideBetDetail(updated));
   });
 
@@ -320,7 +413,7 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       created_by: user.id
     });
 
-    await notifyBetChanged(bet.id);
+    await realtime.notifyBetChanged(bet.id);
     res.status(201).json({ ok: true });
   });
 
@@ -391,7 +484,7 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
-    await notifyBetChanged(bet.id);
+    await realtime.notifyBetChanged(bet.id);
     res.json({ ok: true, winners: winners.length, payoutCredits: payout, feeCredits: fee });
   });
 
@@ -516,7 +609,7 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
-    await notifyBetChanged(bet.id);
+    await realtime.notifyBetChanged(bet.id);
     res.json({
       ok: true,
       previousWinnerCount: previousWinners.length,
@@ -1044,6 +1137,27 @@ function mapCreditRequest(row: {
   };
 }
 
+function mapChatMessage(row: {
+  id: string;
+  room: ChatRoom;
+  side_bet_id: string | null;
+  user_id: string;
+  body: string;
+  created_at: string;
+  profiles?: { display_name: string; email: string | null } | null;
+}): ChatMessage {
+  return {
+    id: row.id,
+    room: row.room,
+    sideBetId: row.side_bet_id,
+    userId: row.user_id,
+    userName: row.profiles?.display_name ?? "Unknown user",
+    userEmail: row.profiles?.email ?? null,
+    body: row.body,
+    createdAt: row.created_at
+  };
+}
+
 function isMissingRedemptionTable(error: { code?: string; message?: string }) {
   return (
     error.code === "42P01" ||
@@ -1057,6 +1171,15 @@ function isMissingCreditRequestTable(error: { code?: string; message?: string })
   return (
     error.code === "42P01" ||
     error.message?.includes("credit_requests") ||
+    error.message?.includes("schema cache") ||
+    false
+  );
+}
+
+function isMissingChatMessagesTable(error: { code?: string; message?: string }) {
+  return (
+    error.code === "42P01" ||
+    error.message?.includes("chat_messages") ||
     error.message?.includes("schema cache") ||
     false
   );
