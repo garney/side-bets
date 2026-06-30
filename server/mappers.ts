@@ -16,7 +16,7 @@ type SideBetRow = {
   created_at: string;
   options: BetOption[];
   profiles?: { display_name: string } | null;
-  bet_entries?: { id: string; stake_credits: string | number }[];
+  bet_entries?: BetEntryRow[];
 };
 
 type BetEntryRow = {
@@ -29,9 +29,11 @@ type BetEntryRow = {
   profiles?: { display_name: string; email: string | null } | null;
 };
 
-export function mapSideBet(row: SideBetRow): SideBet {
+export function mapSideBet(row: SideBetRow, currentUserId?: string): SideBet {
   const entries = row.bet_entries ?? [];
   const buyInCredits = Number(row.buy_in_credits);
+  const optionLabels = new Map(row.options.map((option) => [option.id, option.label]));
+  const currentUserEntry = currentUserId ? entries.find((entry) => entry.user_id === currentUserId) : undefined;
 
   return {
     id: row.id,
@@ -49,13 +51,14 @@ export function mapSideBet(row: SideBetRow): SideBet {
     participantCount: entries.length,
     potCredits: entries.reduce((total, entry) => total + Number(entry.stake_credits), 0),
     options: row.options,
+    currentUserEntry: currentUserEntry ? mapBetEntry(currentUserEntry, optionLabels) : null,
     winningOptionId: row.winning_option_id,
     createdAt: row.created_at
   };
 }
 
-export function mapSideBetDetail(row: Omit<SideBetRow, "bet_entries"> & { bet_entries?: BetEntryRow[] }): SideBetDetail {
-  const bet = mapSideBet(row);
+export function mapSideBetDetail(row: Omit<SideBetRow, "bet_entries"> & { bet_entries?: BetEntryRow[] }, currentUserId?: string): SideBetDetail {
+  const bet = mapSideBet(row, currentUserId);
   const optionLabels = new Map(bet.options.map((option) => [option.id, option.label]));
 
   return {
