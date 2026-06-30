@@ -17,11 +17,22 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 
-async function notifyBetChanged(betId: string) {
-  io.to("side-bets").emit("side-bet:changed", { betId });
-}
+const realtime = {
+  async sideBetChanged(betId: string, reason: string) {
+    io.to("side-bets").to(`side-bet:${betId}`).emit("side-bet:changed", { betId, reason });
+  },
+  async walletChanged(userIds: string | string[], reason: string) {
+    const ids = Array.isArray(userIds) ? userIds : [userIds];
+    for (const userId of [...new Set(ids)]) {
+      io.to(`user:${userId}`).emit("wallet:changed", { reason });
+    }
+  },
+  async adminChanged(reason: string) {
+    io.to("admin").emit("admin:changed", { reason });
+  }
+};
 
-app.use("/api", createApiRouter(notifyBetChanged));
+app.use("/api", createApiRouter(realtime));
 
 if (config.nodeEnv === "production") {
   const clientDist = path.resolve(process.cwd(), "client/dist");

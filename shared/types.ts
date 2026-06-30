@@ -30,6 +30,7 @@ export type SideBet = {
   participantCount: number;
   potCredits: number;
   options: BetOption[];
+  currentUserEntry: BetEntry | null;
   winningOptionId: string | null;
   createdAt: string;
 };

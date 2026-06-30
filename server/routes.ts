@@ -73,7 +73,13 @@ const updateCreditRequestSchema = z.object({
   adminNote: z.string().max(1000).optional()
 });
 
-export function createApiRouter(notifyBetChanged: (betId: string) => Promise<void>) {
+type RealtimeNotifier = {
+  sideBetChanged: (betId: string, reason: string) => Promise<void>;
+  walletChanged: (userIds: string | string[], reason: string) => Promise<void>;
+  adminChanged: (reason: string) => Promise<void>;
+};
+
+export function createApiRouter(realtime: RealtimeNotifier) {
   const router = Router();
 
   router.get("/health", (_req, res) => {
@@ -108,12 +114,13 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
   });
 
   router.get("/side-bets", requireAuth, async (req, res) => {
+    const user = (req as AuthedRequest).user;
     const search = String(req.query.search ?? "").trim();
     const status = String(req.query.status ?? "all");
 
     let query = supabaseAdmin
       .from("side_bets")
-      .select("*, profiles!side_bets_manager_id_fkey(display_name), bet_entries(id, stake_credits)")
+      .select("*, profiles!side_bets_manager_id_fkey(display_name), bet_entries(id, side_bet_id, user_id, option_id, stake_credits, created_at)")
       .order("created_at", { ascending: false });
 
     if (search) {
@@ -130,7 +137,7 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
-    res.json(data.map(mapSideBet));
+    res.json(data.map((row) => mapSideBet(row, user.id)));
   });
 
   router.get("/side-bets/:id", requireAuth, async (req, res) => {
@@ -146,7 +153,8 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
-    res.json(mapSideBetDetail(data));
+    const user = (req as AuthedRequest).user;
+    res.json(mapSideBetDetail(data, user.id));
   });
 
   router.post("/side-bets", requireAuth, async (req, res) => {
@@ -172,7 +180,7 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
         closes_at: parsed.data.closesAt,
         options
       })
-      .select("*, profiles!side_bets_manager_id_fkey(display_name), bet_entries(id, stake_credits)")
+      .select("*, profiles!side_bets_manager_id_fkey(display_name), bet_entries(id, side_bet_id, user_id, option_id, stake_credits, created_at)")
       .single();
 
     if (error) {
@@ -180,8 +188,9 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
-    await notifyBetChanged(data.id);
-    res.status(201).json(mapSideBet(data));
+    await realtime.sideBetChanged(data.id, "created");
+    await realtime.adminChanged("side-bets");
+    res.status(201).json(mapSideBet(data, user.id));
   });
 
   router.patch("/side-bets/:id", requireAuth, async (req, res) => {
@@ -250,8 +259,8 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
-    await notifyBetChanged(bet.id);
-    res.json(mapSideBetDetail(updated));
+    await realtime.sideBetChanged(bet.id, "updated");
+    res.json(mapSideBetDetail(updated, user.id));
   });
 
   router.post("/side-bets/:id/join", requireAuth, async (req, res) => {
@@ -276,6 +285,34 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
     const option = (bet.options as BetOption[]).find((candidate) => candidate.id === parsed.data.optionId);
     if (!option) {
       res.status(400).json({ error: "Invalid option" });
+      return;
+    }
+
+    const { data: existingEntry, error: existingEntryError } = await supabaseAdmin
+      .from("bet_entries")
+      .select("*")
+      .eq("side_bet_id", bet.id)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (existingEntryError) {
+      res.status(500).json({ error: existingEntryError.message });
+      return;
+    }
+
+    if (existingEntry) {
+      if (existingEntry.option_id !== option.id) {
+        const { error: updateEntryError } = await supabaseAdmin.from("bet_entries").update({ option_id: option.id }).eq("id", existingEntry.id);
+
+        if (updateEntryError) {
+          res.status(500).json({ error: updateEntryError.message });
+          return;
+        }
+
+        await realtime.sideBetChanged(bet.id, "entry-changed");
+      }
+
+      res.json({ ok: true, changed: existingEntry.option_id !== option.id });
       return;
     }
 
@@ -320,7 +357,9 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       created_by: user.id
     });
 
-    await notifyBetChanged(bet.id);
+    await realtime.sideBetChanged(bet.id, "joined");
+    await realtime.walletChanged(user.id, "buy-in");
+    await realtime.adminChanged("transactions");
     res.status(201).json({ ok: true });
   });
 
@@ -391,7 +430,12 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
-    await notifyBetChanged(bet.id);
+    await realtime.sideBetChanged(bet.id, "settled");
+    await realtime.walletChanged(
+      winners.map((winner) => winner.user_id),
+      "settlement"
+    );
+    await realtime.adminChanged("transactions");
     res.json({ ok: true, winners: winners.length, payoutCredits: payout, feeCredits: fee });
   });
 
@@ -516,7 +560,11 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
-    await notifyBetChanged(bet.id);
+    await realtime.sideBetChanged(bet.id, "rectified");
+    if (affectedUserIds.length > 0) {
+      await realtime.walletChanged(affectedUserIds, "settlement-rectified");
+    }
+    await realtime.adminChanged("transactions");
     res.json({
       ok: true,
       previousWinnerCount: previousWinners.length,
@@ -652,6 +700,8 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
+    await realtime.walletChanged(user.id, "redemption-requested");
+    await realtime.adminChanged("redemptions");
     res.status(201).json(mapRedemptionRequest(redemption));
   });
 
@@ -682,6 +732,7 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
+    await realtime.adminChanged("credit-requests");
     res.status(201).json(mapCreditRequest(data));
   });
 
@@ -772,6 +823,8 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
+    await realtime.walletChanged(parsed.data.userId, "admin-credit-adjustment");
+    await realtime.adminChanged("credits");
     res.status(201).json({ ok: true, creditsBalance: nextBalance });
   });
 
@@ -899,6 +952,10 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
+    if (parsed.data.status === "rejected") {
+      await realtime.walletChanged(redemption.user_id, "redemption-refunded");
+    }
+    await realtime.adminChanged("redemptions");
     res.json(mapRedemptionRequest(updated));
   });
 
@@ -984,6 +1041,10 @@ export function createApiRouter(notifyBetChanged: (betId: string) => Promise<voi
       return;
     }
 
+    if (parsed.data.status === "approved") {
+      await realtime.walletChanged(creditRequest.user_id, "credit-request-approved");
+    }
+    await realtime.adminChanged("credit-requests");
     res.json(mapCreditRequest(updated));
   });
 

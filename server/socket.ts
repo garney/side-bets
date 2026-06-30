@@ -1,6 +1,7 @@
 import type { Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
-import { supabaseAuth } from "./supabase.js";
+import { config } from "./config.js";
+import { supabaseAdmin, supabaseAuth } from "./supabase.js";
 
 export function createSocketServer(httpServer: HttpServer) {
   const io = new Server(httpServer, {
@@ -23,13 +24,31 @@ export function createSocketServer(httpServer: HttpServer) {
       return;
     }
 
+    const { data: adminRow } = await supabaseAdmin.from("admin_users").select("user_id").eq("user_id", data.user.id).maybeSingle();
+
     socket.data.userId = data.user.id;
+    socket.data.isAdmin = Boolean(adminRow) || config.adminUserIds.has(data.user.id);
     next();
   });
 
   io.on("connection", (socket) => {
     socket.join("side-bets");
-    socket.emit("connected", { userId: socket.data.userId });
+    socket.join(`user:${socket.data.userId}`);
+    if (socket.data.isAdmin) {
+      socket.join("admin");
+    }
+
+    socket.on("side-bet:watch", (payload: { betId?: unknown }) => {
+      if (typeof payload.betId !== "string") return;
+      socket.join(`side-bet:${payload.betId}`);
+    });
+
+    socket.on("side-bet:unwatch", (payload: { betId?: unknown }) => {
+      if (typeof payload.betId !== "string") return;
+      socket.leave(`side-bet:${payload.betId}`);
+    });
+
+    socket.emit("connected", { userId: socket.data.userId, isAdmin: socket.data.isAdmin });
   });
 
   return io;
