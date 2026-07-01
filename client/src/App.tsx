@@ -12,6 +12,19 @@ type PendingSettlement = {
   optionId: string;
 };
 
+function getSideBetIdFromPath() {
+  const match = window.location.pathname.match(/^\/side-bets\/([^/]+)$/);
+  return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+function pushSideBetPath(id: string) {
+  window.history.pushState({}, "", `/side-bets/${encodeURIComponent(id)}`);
+}
+
+function pushSideBetListPath() {
+  window.history.pushState({}, "", "/");
+}
+
 const defaultForm = {
   title: "Will volume exceed _M Yen on _ _",
   description: "Will volume exceed _M Yen on Tuesday _\nSide Bet closes 11:30 am _\nwill be settled 10 am the next day",
@@ -27,6 +40,7 @@ export function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [sideBets, setSideBets] = useState<SideBet[]>([]);
   const [selectedSideBetId, setSelectedSideBetId] = useState<string | null>(null);
+  const [routeSideBetId, setRouteSideBetId] = useState<string | null>(() => getSideBetIdFromPath());
   const [selectedSideBet, setSelectedSideBet] = useState<SideBetDetail | null>(null);
   const [selectedSideBetLoading, setSelectedSideBetLoading] = useState(false);
   const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
@@ -56,15 +70,16 @@ export function App() {
   const chatOpenRef = useRef(false);
 
   const activeBets = useMemo(() => sideBets.filter((bet) => bet.status === "open").length, [sideBets]);
+  const activeSideBetId = routeSideBetId ?? selectedSideBetId;
 
   const refreshSideBetList = useCallback(async () => {
     setSideBets(await api.sideBets(search, status));
   }, [search, status]);
 
   const refreshSelectedSideBet = useCallback(async () => {
-    if (!selectedSideBetId) return;
-    setSelectedSideBet(await api.sideBet(selectedSideBetId));
-  }, [selectedSideBetId]);
+    if (!activeSideBetId) return;
+    setSelectedSideBet(await api.sideBet(activeSideBetId));
+  }, [activeSideBetId]);
 
   const refreshWalletData = useCallback(async () => {
     const [me, wallet, walletRedemptions, walletCreditRequests] = await Promise.all([api.me(), api.transactions(), api.redemptions(), api.creditRequests()]);
@@ -90,25 +105,23 @@ export function App() {
   }, []);
 
   const refreshData = useCallback(async () => {
-    const [me, bets, wallet, walletRedemptions, walletCreditRequests, selectedBet] = await Promise.all([
+    const [me, bets, wallet, walletRedemptions, walletCreditRequests] = await Promise.all([
       api.me(),
       api.sideBets(search, status),
       api.transactions(),
       api.redemptions(),
-      api.creditRequests(),
-      selectedSideBetId ? api.sideBet(selectedSideBetId) : Promise.resolve(null)
+      api.creditRequests()
     ]);
     setProfile(me);
     setSideBets(bets);
     setTransactions(wallet);
     setRedemptions(walletRedemptions);
     setCreditRequests(walletCreditRequests);
-    setSelectedSideBet(selectedBet);
 
     if (me.isAdmin) {
       await refreshAdminData();
     }
-  }, [refreshAdminData, search, selectedSideBetId, status]);
+  }, [refreshAdminData, search, status]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -123,9 +136,60 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    function syncRoute() {
+      const nextSideBetId = getSideBetIdFromPath();
+      setRouteSideBetId(nextSideBetId);
+      if (nextSideBetId) {
+        setSelectedSideBetId(null);
+      }
+      if (nextSideBetId) {
+        setView("side-bets");
+      }
+    }
+
+    window.addEventListener("popstate", syncRoute);
+    return () => window.removeEventListener("popstate", syncRoute);
+  }, []);
+
+  useEffect(() => {
     if (sessionState !== "signed-in") return;
     refreshData().catch((error) => setMessage(error.message));
   }, [sessionState, refreshData]);
+
+  useEffect(() => {
+    if (sessionState !== "signed-in") return;
+
+    if (!activeSideBetId) {
+      setSelectedSideBet(null);
+      setSelectedSideBetLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSelectedSideBetLoading(true);
+    api
+      .sideBet(activeSideBetId)
+      .then((bet) => {
+        if (!cancelled) {
+          setSelectedSideBet(bet);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setSelectedSideBet(null);
+          setMessage(error instanceof Error ? error.message : "Could not load side bet");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSelectedSideBetLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSideBetId, sessionState]);
 
   useEffect(() => {
     if (profile && !profile.isAdmin && view === "admin") {
@@ -134,15 +198,10 @@ export function App() {
   }, [profile, view]);
 
   useEffect(() => {
-    if (!selectedSideBetId && !createModalOpen && !pendingSettlement) return;
+    if (!createModalOpen && !pendingSettlement) return;
 
     function closeOnEscape(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
-        if (selectedSideBetId) {
-          setSelectedSideBetId(null);
-          setSelectedSideBet(null);
-          setSelectedSideBetLoading(false);
-        }
         setCreateModalOpen(false);
         setPendingSettlement(null);
       }
@@ -150,7 +209,7 @@ export function App() {
 
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [createModalOpen, pendingSettlement, selectedSideBetId]);
+  }, [createModalOpen, pendingSettlement]);
 
   useEffect(() => {
     if (sessionState !== "signed-in") return;
@@ -171,14 +230,17 @@ export function App() {
   }, [chatOpen]);
 
   useEffect(() => {
-    if (sessionState !== "signed-in" || !selectedSideBetId) {
+    if (sessionState !== "signed-in" || !activeSideBetId) {
       setSideBetComments([]);
       setSideBetCommentDraft("");
       return;
     }
 
-    api.chatMessages("side_bet", selectedSideBetId).then(setSideBetComments).catch((error) => setMessage(error.message));
-  }, [selectedSideBetId, sessionState]);
+    api
+      .chatMessages("side_bet", activeSideBetId)
+      .then((comments) => setSideBetComments(sortNewestFirst(comments)))
+      .catch((error) => setMessage(error.message));
+  }, [activeSideBetId, sessionState]);
 
   useEffect(() => {
     let socket: Socket | null = null;
@@ -188,14 +250,14 @@ export function App() {
       if (!data.session?.access_token) return;
 
       socket = io("/", { auth: { token: data.session.access_token } });
-      if (selectedSideBetId) {
-        socket.emit("side-bet:watch", { betId: selectedSideBetId });
-        socket.emit("chat:watch", { sideBetId: selectedSideBetId });
+      if (activeSideBetId) {
+        socket.emit("side-bet:watch", { betId: activeSideBetId });
+        socket.emit("chat:watch", { sideBetId: activeSideBetId });
       }
 
       socket.on("side-bet:changed", (payload: { betId?: string }) => {
         refreshSideBetList().catch((error) => setMessage(error.message));
-        if (payload.betId && payload.betId === selectedSideBetId) {
+        if (payload.betId && payload.betId === activeSideBetId) {
           refreshSelectedSideBet().catch((error) => setMessage(error.message));
         }
       });
@@ -212,8 +274,8 @@ export function App() {
       socket.on("chat:message", (message: ChatMessage) => {
         if (message.room === "side_bet") {
           setSideBetComments((current) => {
-            if (message.sideBetId !== selectedSideBetId || current.some((candidate) => candidate.id === message.id)) return current;
-            return [...current, message].slice(-50);
+            if (message.sideBetId !== activeSideBetId || current.some((candidate) => candidate.id === message.id)) return current;
+            return [message, ...current].slice(0, 50);
           });
           return;
         }
@@ -231,13 +293,13 @@ export function App() {
     }
 
     return () => {
-      if (socket && selectedSideBetId) {
-        socket.emit("side-bet:unwatch", { betId: selectedSideBetId });
-        socket.emit("chat:unwatch", { sideBetId: selectedSideBetId });
+      if (socket && activeSideBetId) {
+        socket.emit("side-bet:unwatch", { betId: activeSideBetId });
+        socket.emit("chat:unwatch", { sideBetId: activeSideBetId });
       }
       socket?.disconnect();
     };
-  }, [profile?.isAdmin, refreshAdminData, refreshSelectedSideBet, refreshSideBetList, refreshWalletData, selectedSideBetId, sessionState]);
+  }, [profile?.isAdmin, refreshAdminData, refreshSelectedSideBet, refreshSideBetList, refreshWalletData, activeSideBetId, sessionState]);
 
   async function signIn() {
     await supabase.auth.signInWithOAuth({
@@ -283,17 +345,20 @@ export function App() {
     }
   }
 
-  async function focusSideBet(id: string) {
-    setSelectedSideBetId(id);
-    setSelectedSideBetLoading(true);
+  function openSideBetPage(id: string) {
+    pushSideBetPath(id);
+    setRouteSideBetId(id);
+    setSelectedSideBetId(null);
     setMessage("");
-    try {
-      setSelectedSideBet(await api.sideBet(id));
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not load side bet");
-    } finally {
-      setSelectedSideBetLoading(false);
+  }
+
+  function closeSideBetPage() {
+    if (getSideBetIdFromPath()) {
+      pushSideBetListPath();
     }
+    setRouteSideBetId(null);
+    setSelectedSideBet(null);
+    setSelectedSideBetLoading(false);
   }
 
   function closeSideBetModal() {
@@ -353,19 +418,23 @@ export function App() {
   async function sendSideBetComment(event: FormEvent) {
     event.preventDefault();
     const body = sideBetCommentDraft.trim();
-    if (!body || !selectedSideBetId) return;
+    if (!body || !activeSideBetId) return;
 
     setSideBetCommentBusy(true);
     setMessage("");
     try {
-      const sent = await api.createChatMessage({ room: "side_bet", sideBetId: selectedSideBetId, body });
-      setSideBetComments((current) => (current.some((comment) => comment.id === sent.id) ? current : [...current, sent].slice(-50)));
+      const sent = await api.createChatMessage({ room: "side_bet", sideBetId: activeSideBetId, body });
+      setSideBetComments((current) => (current.some((comment) => comment.id === sent.id) ? current : [sent, ...current].slice(0, 50)));
       setSideBetCommentDraft("");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not add comment");
     } finally {
       setSideBetCommentBusy(false);
     }
+  }
+
+  function sortNewestFirst(messages: ChatMessage[]) {
+    return [...messages].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
   }
 
   if (sessionState === "loading") {
@@ -401,10 +470,28 @@ export function App() {
         <div className="topbar-actions">
           {profile?.isAdmin ? (
             <div className="view-switch" aria-label="View switcher">
-              <button className={view === "side-bets" ? "active" : ""} type="button" onClick={() => setView("side-bets")}>
+              <button
+                className={view === "side-bets" ? "active" : ""}
+                type="button"
+                onClick={() => {
+                  setView("side-bets");
+                  if (routeSideBetId) {
+                    closeSideBetPage();
+                  }
+                }}
+              >
                 Side bets
               </button>
-              <button className={view === "admin" ? "active" : ""} type="button" onClick={() => setView("admin")}>
+              <button
+                className={view === "admin" ? "active" : ""}
+                type="button"
+                onClick={() => {
+                  if (routeSideBetId) {
+                    closeSideBetPage();
+                  }
+                  setView("admin");
+                }}
+              >
                 <ShieldCheck size={15} />
                 Admin
               </button>
@@ -424,89 +511,44 @@ export function App() {
 
       {view === "side-bets" ? (
         <>
-          <section className="metrics">
-            <Metric icon={<Bell size={18} />} label="Open bets" value={activeBets.toString()} />
-            <Metric icon={<Trophy size={18} />} label="Total bets" value={sideBets.length.toString()} />
-            <Metric icon={<CircleDollarSign size={18} />} label="Wallet" value={`${profile?.creditsBalance.toFixed(2) ?? "0.00"} cr`} />
-            <Metric icon={<CheckCircle2 size={18} />} label="Fee" value="0%" />
-          </section>
-
-          <section className="workspace">
-            <aside className="filters">
-              <label className="search-box">
-                <Search size={17} />
-                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search side bets" />
-              </label>
-              <label>
-                Status
-                <select value={status} onChange={(event) => setStatus(event.target.value)}>
-                  <option value="all">All</option>
-                  <option value="open">Open</option>
-                  <option value="settled">Settled</option>
-                  <option value="cancelled">Cancelled</option>
-                </select>
-              </label>
-              <p className="muted">Credits are added by admins from the admin centre.</p>
-            </aside>
-
-            <div className="main-column">
-              <section className="bet-list" aria-label="Side bets">
-                <div className="section-heading">
-                  <h2>{status === "all" ? "All Side Bets" : `${status[0].toUpperCase()}${status.slice(1)} Side Bets`}</h2>
-                  <span>{sideBets.length} visible</span>
-                </div>
-                <div className="table">
-                  <div className="table-row table-head">
-                    <span>Bet</span>
-                    <span>Buy-in</span>
-                    <span>Pot</span>
-                    <span>Closes</span>
-                    <span>Action</span>
-                  </div>
-                  {sideBets.map((bet) => (
-                    <article className={`table-row ${selectedSideBetId === bet.id ? "selected" : ""}`} key={bet.id}>
-                      <div>
-                        <div className="bet-title-row">
-                          <strong>{bet.title}</strong>
-                          <button className="text-button" type="button" onClick={() => focusSideBet(bet.id)}>
-                            View
-                          </button>
-                        </div>
-                        <p>{bet.description}</p>
-                        <span className="muted">Manager: {bet.managerName}</span>
-                        {bet.currentUserEntry ? <ChoiceLabel label={bet.currentUserEntry.optionLabel} compact /> : null}
-                      </div>
-                      <span>{bet.buyInCredits} cr</span>
-                      <span>{bet.potCredits.toFixed(2)} cr</span>
-                      <span>{new Date(bet.closesAt).toLocaleString()}</span>
-                      <BetActions
-                        bet={bet}
-                        busy={busy}
-                        onAction={withAction}
-                        canSettle={profile?.id === bet.managerId || Boolean(profile?.isAdmin)}
-                        onSettleRequest={setPendingSettlement}
-                      />
-                    </article>
-                  ))}
-              {sideBets.length === 0 ? <div className="empty-state">No side bets match this view.</div> : null}
-            </div>
-          </section>
-            </div>
-
-            <aside className="create-panel">
-              <section className="create-entry">
-                <div className="section-heading">
-                  <h2>Create</h2>
-                  <Plus size={18} />
-                </div>
-                <button className="primary-button" type="button" onClick={() => setCreateModalOpen(true)}>
-                  Create side bet
-                </button>
-              </section>
-
-              <Wallet transactions={transactions} redemptions={redemptions} creditRequests={creditRequests} busy={busy} onAction={withAction} />
-            </aside>
-          </section>
+          {routeSideBetId ? (
+            <SideBetPage
+              bet={selectedSideBet}
+              loading={selectedSideBetLoading}
+              busy={busy}
+              onBack={closeSideBetPage}
+              onAction={withAction}
+              onSettleRequest={setPendingSettlement}
+              comments={sideBetComments}
+              commentDraft={sideBetCommentDraft}
+              commentsBusy={sideBetCommentBusy}
+              currentUserId={profile?.id ?? ""}
+              onCommentDraftChange={setSideBetCommentDraft}
+              onCommentSubmit={sendSideBetComment}
+              canSettle={profile?.id === selectedSideBet?.managerId || Boolean(profile?.isAdmin)}
+              canEdit={profile?.id === selectedSideBet?.managerId}
+              canRectify={Boolean(profile?.isAdmin)}
+            />
+          ) : null}
+          {!routeSideBetId ? (
+            <SideBetListView
+              activeBets={activeBets}
+              sideBets={sideBets}
+              status={status}
+              search={search}
+              busy={busy}
+              profile={profile}
+              transactions={transactions}
+              redemptions={redemptions}
+              creditRequests={creditRequests}
+              onSearchChange={setSearch}
+              onStatusChange={setStatus}
+              onCreate={() => setCreateModalOpen(true)}
+              onView={openSideBetPage}
+              onAction={withAction}
+              onSettleRequest={setPendingSettlement}
+            />
+          ) : null}
           {createModalOpen ? (
             <CreateSideBetModal form={form} busy={busy} onClose={() => setCreateModalOpen(false)} onSubmit={createBet} onChange={setForm} />
           ) : null}
@@ -655,6 +697,188 @@ function ChatWidget({
         {unreadCount > 0 ? <span>{unreadCount}</span> : null}
       </button>
     </div>
+  );
+}
+
+function SideBetListView({
+  activeBets,
+  sideBets,
+  status,
+  search,
+  busy,
+  profile,
+  transactions,
+  redemptions,
+  creditRequests,
+  onSearchChange,
+  onStatusChange,
+  onCreate,
+  onView,
+  onAction,
+  onSettleRequest
+}: {
+  activeBets: number;
+  sideBets: SideBet[];
+  status: string;
+  search: string;
+  busy: boolean;
+  profile: Profile | null;
+  transactions: CreditTransaction[];
+  redemptions: RedemptionRequest[];
+  creditRequests: CreditRequest[];
+  onSearchChange: (search: string) => void;
+  onStatusChange: (status: string) => void;
+  onCreate: () => void;
+  onView: (id: string) => void;
+  onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+  onSettleRequest: (settlement: PendingSettlement) => void;
+}) {
+  return (
+    <>
+      <section className="metrics">
+        <Metric icon={<Bell size={18} />} label="Open bets" value={activeBets.toString()} />
+        <Metric icon={<Trophy size={18} />} label="Total bets" value={sideBets.length.toString()} />
+        <Metric icon={<CircleDollarSign size={18} />} label="Wallet" value={`${profile?.creditsBalance.toFixed(2) ?? "0.00"} cr`} />
+        <Metric icon={<CheckCircle2 size={18} />} label="Fee" value="0%" />
+      </section>
+
+      <section className="workspace">
+        <aside className="filters">
+          <label className="search-box">
+            <Search size={17} />
+            <input value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Search side bets" />
+          </label>
+          <label>
+            Status
+            <select value={status} onChange={(event) => onStatusChange(event.target.value)}>
+              <option value="all">All</option>
+              <option value="open">Open</option>
+              <option value="settled">Settled</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </label>
+          <p className="muted">Credits are added by admins from the admin centre.</p>
+        </aside>
+
+        <div className="main-column">
+          <section className="bet-list" aria-label="Side bets">
+            <div className="section-heading">
+              <h2>{status === "all" ? "All Side Bets" : `${status[0].toUpperCase()}${status.slice(1)} Side Bets`}</h2>
+              <span>{sideBets.length} visible</span>
+            </div>
+            <div className="table">
+              <div className="table-row table-head">
+                <span>Bet</span>
+                <span>Buy-in</span>
+                <span>Pot</span>
+                <span>Closes</span>
+                <span>Action</span>
+              </div>
+              {sideBets.map((bet) => (
+                <article className="table-row" key={bet.id}>
+                  <div>
+                    <div className="bet-title-row">
+                      <strong>{bet.title}</strong>
+                      <div className="bet-title-actions">
+                        <button className="text-button" type="button" onClick={() => onView(bet.id)}>
+                          View
+                        </button>
+                      </div>
+                    </div>
+                    <p>{bet.description}</p>
+                    <span className="muted">Manager: {bet.managerName}</span>
+                    {bet.currentUserEntry ? <ChoiceLabel label={bet.currentUserEntry.optionLabel} compact /> : null}
+                  </div>
+                  <span>{bet.buyInCredits} cr</span>
+                  <span>{bet.potCredits.toFixed(2)} cr</span>
+                  <span>{new Date(bet.closesAt).toLocaleString()}</span>
+                  <BetActions
+                    bet={bet}
+                    busy={busy}
+                    onAction={onAction}
+                    canSettle={profile?.id === bet.managerId || Boolean(profile?.isAdmin)}
+                    onSettleRequest={onSettleRequest}
+                  />
+                </article>
+              ))}
+              {sideBets.length === 0 ? <div className="empty-state">No side bets match this view.</div> : null}
+            </div>
+          </section>
+        </div>
+
+        <aside className="create-panel">
+          <section className="create-entry">
+            <div className="section-heading">
+              <h2>Create</h2>
+              <Plus size={18} />
+            </div>
+            <button className="primary-button" type="button" onClick={onCreate}>
+              Create side bet
+            </button>
+          </section>
+
+          <Wallet transactions={transactions} redemptions={redemptions} creditRequests={creditRequests} busy={busy} onAction={onAction} />
+        </aside>
+      </section>
+    </>
+  );
+}
+
+function SideBetPage({
+  bet,
+  loading,
+  busy,
+  comments,
+  commentDraft,
+  commentsBusy,
+  currentUserId,
+  canSettle,
+  canEdit,
+  canRectify,
+  onBack,
+  onAction,
+  onCommentDraftChange,
+  onCommentSubmit,
+  onSettleRequest
+}: {
+  bet: SideBetDetail | null;
+  loading: boolean;
+  busy: boolean;
+  comments: ChatMessage[];
+  commentDraft: string;
+  commentsBusy: boolean;
+  currentUserId: string;
+  canSettle: boolean;
+  canEdit: boolean;
+  canRectify: boolean;
+  onBack: () => void;
+  onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+  onCommentDraftChange: (draft: string) => void;
+  onCommentSubmit: (event: FormEvent) => Promise<void>;
+  onSettleRequest: (settlement: PendingSettlement) => void;
+}) {
+  return (
+    <section className="side-bet-page">
+      <button className="text-button back-button" type="button" onClick={onBack}>
+        Back to side bets
+      </button>
+      <SideBetFocusPanel
+        bet={bet}
+        loading={loading}
+        busy={busy}
+        comments={comments}
+        commentDraft={commentDraft}
+        commentsBusy={commentsBusy}
+        currentUserId={currentUserId}
+        canSettle={canSettle}
+        canEdit={canEdit}
+        canRectify={canRectify}
+        onAction={onAction}
+        onCommentDraftChange={onCommentDraftChange}
+        onCommentSubmit={onCommentSubmit}
+        onSettleRequest={onSettleRequest}
+      />
+    </section>
   );
 }
 
@@ -1119,21 +1343,6 @@ function SideBetComments({
         <h2>Comments</h2>
         <span>{comments.length} recent</span>
       </div>
-      <div className="comment-list">
-        {comments.map((comment) => {
-          const mine = comment.userId === currentUserId;
-          return (
-            <article className={mine ? "comment-row mine" : "comment-row"} key={comment.id}>
-              <div>
-                <strong>{mine ? "You" : comment.userName}</strong>
-                <span>{new Date(comment.createdAt).toLocaleString()}</span>
-              </div>
-              <p>{comment.body}</p>
-            </article>
-          );
-        })}
-        {comments.length === 0 ? <p className="muted">No comments yet.</p> : null}
-      </div>
       <form className="comment-composer" onSubmit={onSubmit}>
         <textarea
           value={draft}
@@ -1153,6 +1362,21 @@ function SideBetComments({
           Comment
         </button>
       </form>
+      <div className="comment-list">
+        {comments.map((comment) => {
+          const mine = comment.userId === currentUserId;
+          return (
+            <article className={mine ? "comment-row mine" : "comment-row"} key={comment.id}>
+              <div>
+                <strong>{mine ? "You" : comment.userName}</strong>
+                <span>{new Date(comment.createdAt).toLocaleString()}</span>
+              </div>
+              <p>{comment.body}</p>
+            </article>
+          );
+        })}
+        {comments.length === 0 ? <p className="muted">No comments yet.</p> : null}
+      </div>
     </section>
   );
 }

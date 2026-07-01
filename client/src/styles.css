@@ -577,6 +577,14 @@ textarea:focus {
   justify-content: space-between;
 }
 
+.bet-title-actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .bet-title-row .text-button {
   min-height: 30px;
   padding: 0 6px;
@@ -649,6 +657,23 @@ textarea:focus {
 .side-bet-focus {
   clear: both;
   padding: 16px;
+}
+
+.side-bet-page {
+  display: grid;
+  gap: 14px;
+  background: #ffffff;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.side-bet-page .side-bet-focus {
+  padding: 0;
+}
+
+.back-button {
+  justify-self: start;
 }
 
 .settlement-confirmation {
