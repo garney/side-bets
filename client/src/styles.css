@@ -730,6 +730,7 @@ textarea:focus {
 
 .option-breakdown,
 .guess-list,
+.side-bet-comments,
 .side-bet-create-form,
 .side-bet-edit-form,
 .rectification-form {
@@ -798,6 +799,59 @@ textarea:focus {
 .guess-row {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   align-items: center;
+}
+
+.side-bet-comments {
+  display: grid;
+  gap: 12px;
+}
+
+.comment-list {
+  display: grid;
+  gap: 10px;
+}
+
+.comment-row {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  padding: 10px;
+  background: #ffffff;
+}
+
+.comment-row.mine {
+  border-color: #b8d8cf;
+  background: #eefaf6;
+}
+
+.comment-row div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.comment-row div span {
+  color: #64716d;
+  font-size: 12px;
+}
+
+.comment-row p {
+  margin: 0;
+  color: #17211f;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.comment-composer {
+  display: grid;
+  gap: 10px;
+}
+
+.comment-composer button {
+  justify-self: end;
+  width: auto;
 }
 
 .empty-state {

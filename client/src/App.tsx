@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Bell, CheckCircle2, CircleDollarSign, LogOut, MessageCircle, Plus, Search, Send, ShieldCheck, Trophy, UserCircle2, X } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
 import type { AdminSummary, AdminUser, ChatMessage, CreditRequest, CreditTransaction, Profile, RedemptionRequest, SideBet, SideBetDetail } from "../../shared/types";
@@ -44,11 +44,16 @@ export function App() {
   const [pendingSettlement, setPendingSettlement] = useState<PendingSettlement | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
   const [chatDraft, setChatDraft] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
+  const [sideBetComments, setSideBetComments] = useState<ChatMessage[]>([]);
+  const [sideBetCommentDraft, setSideBetCommentDraft] = useState("");
+  const [sideBetCommentBusy, setSideBetCommentBusy] = useState(false);
   const [view, setView] = useState<AppView>("side-bets");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const chatOpenRef = useRef(false);
 
   const activeBets = useMemo(() => sideBets.filter((bet) => bet.status === "open").length, [sideBets]);
 
@@ -149,8 +154,31 @@ export function App() {
 
   useEffect(() => {
     if (sessionState !== "signed-in") return;
-    api.chatMessages("general").then(setChatMessages).catch((error) => setMessage(error.message));
+    api
+      .chatMessages("general")
+      .then((messages) => {
+        setChatMessages(messages);
+        setChatUnreadCount(0);
+      })
+      .catch((error) => setMessage(error.message));
   }, [sessionState]);
+
+  useEffect(() => {
+    chatOpenRef.current = chatOpen;
+    if (chatOpen) {
+      setChatUnreadCount(0);
+    }
+  }, [chatOpen]);
+
+  useEffect(() => {
+    if (sessionState !== "signed-in" || !selectedSideBetId) {
+      setSideBetComments([]);
+      setSideBetCommentDraft("");
+      return;
+    }
+
+    api.chatMessages("side_bet", selectedSideBetId).then(setSideBetComments).catch((error) => setMessage(error.message));
+  }, [selectedSideBetId, sessionState]);
 
   useEffect(() => {
     let socket: Socket | null = null;
@@ -162,6 +190,7 @@ export function App() {
       socket = io("/", { auth: { token: data.session.access_token } });
       if (selectedSideBetId) {
         socket.emit("side-bet:watch", { betId: selectedSideBetId });
+        socket.emit("chat:watch", { sideBetId: selectedSideBetId });
       }
 
       socket.on("side-bet:changed", (payload: { betId?: string }) => {
@@ -181,8 +210,17 @@ export function App() {
         }
       });
       socket.on("chat:message", (message: ChatMessage) => {
+        if (message.room === "side_bet") {
+          setSideBetComments((current) => {
+            if (message.sideBetId !== selectedSideBetId || current.some((candidate) => candidate.id === message.id)) return current;
+            return [...current, message].slice(-50);
+          });
+          return;
+        }
+
         setChatMessages((current) => {
           if (current.some((candidate) => candidate.id === message.id)) return current;
+          setChatUnreadCount((unread) => (chatOpenRef.current ? 0 : unread + 1));
           return [...current, message].slice(-50);
         });
       });
@@ -195,6 +233,7 @@ export function App() {
     return () => {
       if (socket && selectedSideBetId) {
         socket.emit("side-bet:unwatch", { betId: selectedSideBetId });
+        socket.emit("chat:unwatch", { sideBetId: selectedSideBetId });
       }
       socket?.disconnect();
     };
@@ -213,6 +252,8 @@ export function App() {
     setSideBets([]);
     setSelectedSideBetId(null);
     setSelectedSideBet(null);
+    setSideBetComments([]);
+    setSideBetCommentDraft("");
     setTransactions([]);
     setRedemptions([]);
     setCreditRequests([]);
@@ -222,6 +263,7 @@ export function App() {
     setAdminCreditRequests([]);
     setChatOpen(false);
     setChatMessages([]);
+    setChatUnreadCount(0);
     setChatDraft("");
     setView("side-bets");
     setSessionState("signed-out");
@@ -305,6 +347,24 @@ export function App() {
       setMessage(error instanceof Error ? error.message : "Could not send chat message");
     } finally {
       setChatBusy(false);
+    }
+  }
+
+  async function sendSideBetComment(event: FormEvent) {
+    event.preventDefault();
+    const body = sideBetCommentDraft.trim();
+    if (!body || !selectedSideBetId) return;
+
+    setSideBetCommentBusy(true);
+    setMessage("");
+    try {
+      const sent = await api.createChatMessage({ room: "side_bet", sideBetId: selectedSideBetId, body });
+      setSideBetComments((current) => (current.some((comment) => comment.id === sent.id) ? current : [...current, sent].slice(-50)));
+      setSideBetCommentDraft("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not add comment");
+    } finally {
+      setSideBetCommentBusy(false);
     }
   }
 
@@ -458,6 +518,12 @@ export function App() {
               onClose={closeSideBetModal}
               onAction={withAction}
               onSettleRequest={setPendingSettlement}
+              comments={sideBetComments}
+              commentDraft={sideBetCommentDraft}
+              commentsBusy={sideBetCommentBusy}
+              currentUserId={profile?.id ?? ""}
+              onCommentDraftChange={setSideBetCommentDraft}
+              onCommentSubmit={sendSideBetComment}
               canSettle={profile?.id === selectedSideBet?.managerId || Boolean(profile?.isAdmin)}
               canEdit={profile?.id === selectedSideBet?.managerId}
               canRectify={Boolean(profile?.isAdmin)}
@@ -492,10 +558,19 @@ export function App() {
       <ChatWidget
         open={chatOpen}
         messages={chatMessages}
+        unreadCount={chatUnreadCount}
         draft={chatDraft}
         busy={chatBusy}
         currentUserId={profile?.id ?? ""}
-        onToggle={() => setChatOpen((current) => !current)}
+        onToggle={() => {
+          setChatOpen((current) => {
+            const next = !current;
+            if (next) {
+              setChatUnreadCount(0);
+            }
+            return next;
+          });
+        }}
         onClose={() => setChatOpen(false)}
         onDraftChange={setChatDraft}
         onSubmit={sendChatMessage}
@@ -507,6 +582,7 @@ export function App() {
 function ChatWidget({
   open,
   messages,
+  unreadCount,
   draft,
   busy,
   currentUserId,
@@ -517,6 +593,7 @@ function ChatWidget({
 }: {
   open: boolean;
   messages: ChatMessage[];
+  unreadCount: number;
   draft: string;
   busy: boolean;
   currentUserId: string;
@@ -558,6 +635,12 @@ function ChatWidget({
               value={draft}
               rows={2}
               maxLength={1000}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.shiftKey || busy || !draft.trim()) return;
+
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }}
               onChange={(event) => onDraftChange(event.target.value)}
               placeholder="Say something..."
             />
@@ -569,7 +652,7 @@ function ChatWidget({
       ) : null}
       <button className="chat-launcher" type="button" onClick={onToggle} aria-label={open ? "Close chat" : "Open chat"}>
         <MessageCircle size={23} />
-        {messages.length > 0 ? <span>{messages.length}</span> : null}
+        {unreadCount > 0 ? <span>{unreadCount}</span> : null}
       </button>
     </div>
   );
@@ -704,21 +787,33 @@ function SideBetModal({
   bet,
   loading,
   busy,
+  comments,
+  commentDraft,
+  commentsBusy,
+  currentUserId,
   canSettle,
   canEdit,
   canRectify,
   onClose,
   onAction,
+  onCommentDraftChange,
+  onCommentSubmit,
   onSettleRequest
 }: {
   bet: SideBetDetail | null;
   loading: boolean;
   busy: boolean;
+  comments: ChatMessage[];
+  commentDraft: string;
+  commentsBusy: boolean;
+  currentUserId: string;
   canSettle: boolean;
   canEdit: boolean;
   canRectify: boolean;
   onClose: () => void;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+  onCommentDraftChange: (draft: string) => void;
+  onCommentSubmit: (event: FormEvent) => Promise<void>;
   onSettleRequest: (settlement: PendingSettlement) => void;
 }) {
   return (
@@ -731,10 +826,16 @@ function SideBetModal({
           bet={bet}
           loading={loading}
           busy={busy}
+          comments={comments}
+          commentDraft={commentDraft}
+          commentsBusy={commentsBusy}
+          currentUserId={currentUserId}
           canSettle={canSettle}
           canEdit={canEdit}
           canRectify={canRectify}
           onAction={onAction}
+          onCommentDraftChange={onCommentDraftChange}
+          onCommentSubmit={onCommentSubmit}
           onSettleRequest={onSettleRequest}
         />
       </div>
@@ -746,19 +847,31 @@ function SideBetFocusPanel({
   bet,
   loading,
   busy,
+  comments,
+  commentDraft,
+  commentsBusy,
+  currentUserId,
   canSettle,
   canEdit,
   canRectify,
   onAction,
+  onCommentDraftChange,
+  onCommentSubmit,
   onSettleRequest
 }: {
   bet: SideBetDetail | null;
   loading: boolean;
   busy: boolean;
+  comments: ChatMessage[];
+  commentDraft: string;
+  commentsBusy: boolean;
+  currentUserId: string;
   canSettle: boolean;
   canEdit: boolean;
   canRectify: boolean;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+  onCommentDraftChange: (draft: string) => void;
+  onCommentSubmit: (event: FormEvent) => Promise<void>;
   onSettleRequest: (settlement: PendingSettlement) => void;
 }) {
   const optionStats = useMemo(() => {
@@ -858,6 +971,15 @@ function SideBetFocusPanel({
         ))}
         {bet.entries.length === 0 ? <p className="muted">No guesses yet.</p> : null}
       </section>
+
+      <SideBetComments
+        comments={comments}
+        draft={commentDraft}
+        busy={commentsBusy}
+        currentUserId={currentUserId}
+        onDraftChange={onCommentDraftChange}
+        onSubmit={onCommentSubmit}
+      />
 
       {canEdit && bet.status === "open" ? <EditSideBetForm bet={bet} busy={busy} onAction={onAction} /> : null}
       <BetActions bet={bet} busy={busy} onAction={onAction} canSettle={canSettle} onSettleRequest={onSettleRequest} />
@@ -973,6 +1095,65 @@ function ChoiceLabel({ label, compact = false }: { label: string; compact?: bool
     <span className={compact ? "choice-label compact" : "choice-label"}>
       Your choice <strong>{label}</strong>
     </span>
+  );
+}
+
+function SideBetComments({
+  comments,
+  draft,
+  busy,
+  currentUserId,
+  onDraftChange,
+  onSubmit
+}: {
+  comments: ChatMessage[];
+  draft: string;
+  busy: boolean;
+  currentUserId: string;
+  onDraftChange: (draft: string) => void;
+  onSubmit: (event: FormEvent) => Promise<void>;
+}) {
+  return (
+    <section className="side-bet-comments">
+      <div className="section-heading">
+        <h2>Comments</h2>
+        <span>{comments.length} recent</span>
+      </div>
+      <div className="comment-list">
+        {comments.map((comment) => {
+          const mine = comment.userId === currentUserId;
+          return (
+            <article className={mine ? "comment-row mine" : "comment-row"} key={comment.id}>
+              <div>
+                <strong>{mine ? "You" : comment.userName}</strong>
+                <span>{new Date(comment.createdAt).toLocaleString()}</span>
+              </div>
+              <p>{comment.body}</p>
+            </article>
+          );
+        })}
+        {comments.length === 0 ? <p className="muted">No comments yet.</p> : null}
+      </div>
+      <form className="comment-composer" onSubmit={onSubmit}>
+        <textarea
+          value={draft}
+          rows={3}
+          maxLength={1000}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.shiftKey || busy || !draft.trim()) return;
+
+            event.preventDefault();
+            event.currentTarget.form?.requestSubmit();
+          }}
+          onChange={(event) => onDraftChange(event.target.value)}
+          placeholder="Add a comment..."
+        />
+        <button className="primary-button" disabled={busy || !draft.trim()}>
+          <Send size={16} />
+          Comment
+        </button>
+      </form>
+    </section>
   );
 }
 
