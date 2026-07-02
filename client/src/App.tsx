@@ -1,12 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Bell, CheckCircle2, CircleDollarSign, LogOut, MessageCircle, Plus, Search, Send, ShieldCheck, Trophy, UserCircle2, X } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
-import type { AdminSummary, AdminUser, ChatMessage, CreditRequest, CreditTransaction, Profile, RedemptionRequest, SideBet, SideBetDetail } from "../../shared/types";
+import type {
+  AdminSummary,
+  AdminUser,
+  ChatMessage,
+  CreditRequest,
+  CreditTransaction,
+  Group,
+  GroupMember,
+  Profile,
+  RedemptionRequest,
+  SideBet,
+  SideBetDetail
+} from "../../shared/types";
 import { api } from "./api";
 import { supabase } from "./supabase";
 
 type SessionState = "loading" | "signed-out" | "signed-in";
-type AppView = "side-bets" | "admin";
+type AppView = "side-bets" | "groups" | "admin";
 type PendingSettlement = {
   bet: SideBet;
   optionId: string;
@@ -23,6 +35,13 @@ function pushSideBetPath(id: string) {
 
 function pushSideBetListPath() {
   window.history.pushState({}, "", "/");
+}
+
+function pickDefaultGroupId(groups: Group[], profile: Profile | null, currentId: string | null) {
+  if (groups.length === 0) return null;
+  if (currentId && groups.some((group) => group.id === currentId)) return currentId;
+  const manageable = groups.find((group) => profile?.isAdmin || group.isGroupAdmin);
+  return manageable?.id ?? groups[0].id;
 }
 
 const defaultForm = {
@@ -51,6 +70,11 @@ export function App() {
   const [adminTransactions, setAdminTransactions] = useState<CreditTransaction[]>([]);
   const [adminRedemptions, setAdminRedemptions] = useState<RedemptionRequest[]>([]);
   const [adminCreditRequests, setAdminCreditRequests] = useState<CreditRequest[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [groupMembers, setGroupMembers] = useState<GroupMember[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [groupUserId, setGroupUserId] = useState("");
+  const [groupForm, setGroupForm] = useState({ name: "", visibility: "private" as "public" | "private", logoUrl: "" });
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("open");
   const [form, setForm] = useState(defaultForm);
@@ -89,6 +113,14 @@ export function App() {
     setCreditRequests(walletCreditRequests);
   }, []);
 
+  const refreshGroups = useCallback(async (preferredGroupId?: string | null) => {
+    const [nextGroups, me] = await Promise.all([api.groups(), api.me()]);
+    setProfile(me);
+    setGroups(nextGroups);
+    setSelectedGroupId((current) => pickDefaultGroupId(nextGroups, me, preferredGroupId ?? current));
+    return nextGroups;
+  }, []);
+
   const refreshAdminData = useCallback(async () => {
     const [summary, users, adminTx, redemptionQueue, creditRequestQueue] = await Promise.all([
       api.adminSummary(),
@@ -105,20 +137,23 @@ export function App() {
   }, []);
 
   const refreshData = useCallback(async () => {
-    const [me, bets, wallet, walletRedemptions, walletCreditRequests] = await Promise.all([
+    const [me, bets, wallet, walletRedemptions, walletCreditRequests, nextGroups] = await Promise.all([
       api.me(),
       api.sideBets(search, status),
       api.transactions(),
       api.redemptions(),
-      api.creditRequests()
+      api.creditRequests(),
+      api.groups()
     ]);
     setProfile(me);
     setSideBets(bets);
     setTransactions(wallet);
     setRedemptions(walletRedemptions);
     setCreditRequests(walletCreditRequests);
+    setGroups(nextGroups);
+    setSelectedGroupId((current) => pickDefaultGroupId(nextGroups, me, current));
 
-    if (me.isAdmin) {
+    if (me.isAdmin || me.isGroupAdmin) {
       await refreshAdminData();
     }
   }, [refreshAdminData, search, status]);
@@ -157,6 +192,21 @@ export function App() {
   }, [sessionState, refreshData]);
 
   useEffect(() => {
+    const selectedGroup = groups.find((group) => group.id === selectedGroupId);
+    if (sessionState !== "signed-in" || !selectedGroup || (!profile?.isAdmin && !selectedGroup.isGroupAdmin)) {
+      setGroupMembers([]);
+      return;
+    }
+
+    api.groupMembers(selectedGroup.id).then(setGroupMembers).catch((error) => setMessage(error.message));
+  }, [groups, profile?.isAdmin, profile?.isGroupAdmin, selectedGroupId, sessionState]);
+
+  useEffect(() => {
+    if (view !== "groups" || !profile || groups.length === 0) return;
+    setSelectedGroupId((current) => pickDefaultGroupId(groups, profile, current));
+  }, [groups, profile, view]);
+
+  useEffect(() => {
     if (sessionState !== "signed-in") return;
 
     if (!activeSideBetId) {
@@ -192,7 +242,7 @@ export function App() {
   }, [activeSideBetId, sessionState]);
 
   useEffect(() => {
-    if (profile && !profile.isAdmin && view === "admin") {
+    if (profile && !profile.isAdmin && !profile.isGroupAdmin && view === "admin") {
       setView("side-bets");
     }
   }, [profile, view]);
@@ -323,6 +373,11 @@ export function App() {
     setAdminUsers([]);
     setAdminRedemptions([]);
     setAdminCreditRequests([]);
+    setGroups([]);
+    setGroupMembers([]);
+    setSelectedGroupId(null);
+    setGroupUserId("");
+    setGroupForm({ name: "", visibility: "private", logoUrl: "" });
     setChatOpen(false);
     setChatMessages([]);
     setChatUnreadCount(0);
@@ -343,6 +398,46 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function withGroupAction(action: () => Promise<unknown>, success: string) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await action();
+      const preferredGroupId = typeof result === "string" ? result : null;
+      const nextGroups = await refreshGroups(preferredGroupId);
+      const me = await api.me();
+      setProfile(me);
+      const nextGroupId = pickDefaultGroupId(nextGroups, me, preferredGroupId ?? selectedGroupId);
+      if (nextGroupId) {
+        const selectedGroup = nextGroups.find((group) => group.id === nextGroupId);
+        if (me.isAdmin || selectedGroup?.isGroupAdmin) {
+          setGroupMembers(await api.groupMembers(nextGroupId));
+        }
+      }
+      if (me.isAdmin || me.isGroupAdmin) {
+        await refreshAdminData();
+      }
+      setMessage(success);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createGroup(event: FormEvent) {
+    event.preventDefault();
+    await withGroupAction(async () => {
+      const created = await api.createGroup({
+        name: groupForm.name.trim(),
+        visibility: groupForm.visibility,
+        logoUrl: groupForm.logoUrl.trim() || null
+      });
+      setGroupForm({ name: "", visibility: "private", logoUrl: "" });
+      return created.id;
+    }, "Group created");
   }
 
   function openSideBetPage(id: string) {
@@ -468,20 +563,32 @@ export function App() {
           {/* <span className="muted">Single-port app: web, API, and sockets together.</span> */}
         </div>
         <div className="topbar-actions">
-          {profile?.isAdmin ? (
-            <div className="view-switch" aria-label="View switcher">
-              <button
-                className={view === "side-bets" ? "active" : ""}
-                type="button"
-                onClick={() => {
-                  setView("side-bets");
-                  if (routeSideBetId) {
-                    closeSideBetPage();
-                  }
-                }}
-              >
-                Side bets
-              </button>
+          <div className="view-switch" aria-label="View switcher">
+            <button
+              className={view === "side-bets" ? "active" : ""}
+              type="button"
+              onClick={() => {
+                setView("side-bets");
+                if (routeSideBetId) {
+                  closeSideBetPage();
+                }
+              }}
+            >
+              Side bets
+            </button>
+            <button
+              className={view === "groups" ? "active" : ""}
+              type="button"
+              onClick={() => {
+                if (routeSideBetId) {
+                  closeSideBetPage();
+                }
+                setView("groups");
+              }}
+            >
+              Groups
+            </button>
+            {profile?.isAdmin || profile?.isGroupAdmin ? (
               <button
                 className={view === "admin" ? "active" : ""}
                 type="button"
@@ -495,8 +602,8 @@ export function App() {
                 <ShieldCheck size={15} />
                 Admin
               </button>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
           <span className="balance">
             <CircleDollarSign size={17} />
             {profile?.creditsBalance.toFixed(2) ?? "0.00"} credits
@@ -586,7 +693,31 @@ export function App() {
             />
           ) : null}
         </>
-      ) : profile?.isAdmin ? (
+      ) : view === "groups" ? (
+        <GroupsView
+          groups={groups}
+          members={groupMembers}
+          users={adminUsers}
+          selectedGroupId={selectedGroupId}
+          groupUserId={groupUserId}
+          busy={busy}
+          isMainAdmin={Boolean(profile?.isAdmin)}
+          groupForm={groupForm}
+          onSelectGroup={setSelectedGroupId}
+          onGroupFormChange={setGroupForm}
+          onGroupUserIdChange={setGroupUserId}
+          onCreateGroup={createGroup}
+          onDeleteGroup={(groupId) => withGroupAction(() => api.deleteGroup(groupId), "Group deleted")}
+          onJoin={(groupId) => withGroupAction(() => api.joinGroup(groupId), "Group request submitted")}
+          onApprove={(groupId, userId) => withGroupAction(() => api.reviewGroupMember(groupId, userId, { status: "approved" }), "Group member approved")}
+          onReject={(groupId, userId) => withGroupAction(() => api.reviewGroupMember(groupId, userId, { status: "rejected" }), "Group member rejected")}
+          onSetAdmin={(groupId, userId, isGroupAdmin) =>
+            withGroupAction(() => api.setGroupAdmin(groupId, userId, { isGroupAdmin }), isGroupAdmin ? "Group admin granted" : "Group admin removed")
+          }
+          onAddMember={(groupId, userId) => withGroupAction(() => api.addGroupMember(groupId, { userId, status: "approved" }), "User added to group")}
+          onRemoveMember={(groupId, userId) => withGroupAction(() => api.removeGroupMember(groupId, userId), "User removed from group")}
+        />
+      ) : profile?.isAdmin || profile?.isGroupAdmin ? (
         <AdminCentre
           summary={adminSummary}
           users={adminUsers}
@@ -595,6 +726,12 @@ export function App() {
           creditRequests={adminCreditRequests}
           busy={busy}
           onAction={withAction}
+          onOpenGroups={() => {
+            if (routeSideBetId) {
+              closeSideBetPage();
+            }
+            setView("groups");
+          }}
         />
       ) : null}
       <ChatWidget
@@ -878,6 +1015,212 @@ function SideBetPage({
         onCommentSubmit={onCommentSubmit}
         onSettleRequest={onSettleRequest}
       />
+    </section>
+  );
+}
+
+function GroupsView({
+  groups,
+  members,
+  users,
+  selectedGroupId,
+  groupUserId,
+  busy,
+  isMainAdmin,
+  groupForm,
+  onSelectGroup,
+  onGroupFormChange,
+  onGroupUserIdChange,
+  onCreateGroup,
+  onDeleteGroup,
+  onJoin,
+  onApprove,
+  onReject,
+  onSetAdmin,
+  onAddMember,
+  onRemoveMember
+}: {
+  groups: Group[];
+  members: GroupMember[];
+  users: AdminUser[];
+  selectedGroupId: string | null;
+  groupUserId: string;
+  busy: boolean;
+  isMainAdmin: boolean;
+  groupForm: { name: string; visibility: "public" | "private"; logoUrl: string };
+  onSelectGroup: (id: string) => void;
+  onGroupFormChange: (form: { name: string; visibility: "public" | "private"; logoUrl: string }) => void;
+  onGroupUserIdChange: (id: string) => void;
+  onCreateGroup: (event: FormEvent) => Promise<void>;
+  onDeleteGroup: (groupId: string) => Promise<void>;
+  onJoin: (groupId: string) => Promise<void>;
+  onApprove: (groupId: string, userId: string) => Promise<void>;
+  onReject: (groupId: string, userId: string) => Promise<void>;
+  onSetAdmin: (groupId: string, userId: string, isGroupAdmin: boolean) => Promise<void>;
+  onAddMember: (groupId: string, userId: string) => Promise<void>;
+  onRemoveMember: (groupId: string, userId: string) => Promise<void>;
+}) {
+  const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? groups[0] ?? null;
+  const canManageSelected = Boolean(selectedGroup?.isGroupAdmin || isMainAdmin);
+  const canManageAny = isMainAdmin || groups.some((group) => group.isGroupAdmin);
+  const manageableGroups = isMainAdmin ? groups : groups.filter((group) => group.isGroupAdmin);
+
+  return (
+    <section className="groups-view">
+      <section className="group-list">
+        <div className="section-heading">
+          <h2>Groups</h2>
+          <span>{groups.length} visible</span>
+        </div>
+        {canManageAny ? <p className="muted group-admin-hint">Select a group to manage members, approvals, and admins.</p> : null}
+        <form className="group-create-form" onSubmit={onCreateGroup}>
+          <label>
+            Group name
+            <input value={groupForm.name} onChange={(event) => onGroupFormChange({ ...groupForm, name: event.target.value })} />
+          </label>
+          <label>
+            Logo URL
+            <input value={groupForm.logoUrl} onChange={(event) => onGroupFormChange({ ...groupForm, logoUrl: event.target.value })} />
+          </label>
+          <label>
+            Visibility
+            <select value={groupForm.visibility} onChange={(event) => onGroupFormChange({ ...groupForm, visibility: event.target.value as "public" | "private" })}>
+              <option value="private">Private</option>
+              <option value="public">Public</option>
+            </select>
+          </label>
+          <button className="primary-button" disabled={busy || !groupForm.name.trim()}>
+            Create group
+          </button>
+        </form>
+        {groups.map((group) => (
+          <article
+            className={group.id === selectedGroup?.id ? "group-row selected" : "group-row"}
+            key={group.id}
+            role="button"
+            tabIndex={0}
+            onClick={() => onSelectGroup(group.id)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelectGroup(group.id);
+              }
+            }}
+          >
+            {group.logoUrl ? <img className="group-logo" src={group.logoUrl} alt="" /> : <span className="group-logo fallback">{group.name.slice(0, 2).toUpperCase()}</span>}
+            <div className="group-row-title">
+              <strong>{group.name}</strong>
+              {group.isGroupAdmin || isMainAdmin ? <span className="admin-pill">Manage</span> : null}
+            </div>
+            <span>{group.visibility}</span>
+            <span>{group.memberCount} members</span>
+            <strong>{group.membershipStatus === "none" ? "Not joined" : group.membershipStatus}</strong>
+            {group.membershipStatus === "none" || group.membershipStatus === "rejected" ? (
+              <button
+                className="primary-button"
+                disabled={busy}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onJoin(group.id);
+                }}
+              >
+                {group.visibility === "private" ? "Request access" : "Join"}
+              </button>
+            ) : null}
+          </article>
+        ))}
+        {groups.length === 0 ? (
+          <p className="empty-state">
+            Groups are not set up yet. Run <code>supabase/migrations/0005_groups.sql</code> and <code>0006_group_logo_and_delete.sql</code> in Supabase.
+          </p>
+        ) : null}
+      </section>
+
+      {canManageAny && selectedGroup && canManageSelected ? (
+        <section className="group-admin-panel">
+          <div className="section-heading">
+            <h2>{selectedGroup.name} Members</h2>
+            <span>{isMainAdmin ? "Main admin" : "Group admin"}</span>
+          </div>
+          <button className="text-button danger group-delete-button" type="button" disabled={busy} onClick={() => onDeleteGroup(selectedGroup.id)}>
+            Delete group
+          </button>
+          <form
+            className="group-add-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (groupUserId) {
+                onAddMember(selectedGroup.id, groupUserId);
+              }
+            }}
+          >
+            <label>
+              Add user
+              <select value={groupUserId} onChange={(event) => onGroupUserIdChange(event.target.value)}>
+                <option value="">Select user</option>
+                {users.map((user) => (
+                  <option value={user.id} key={user.id}>
+                    {user.displayName} {user.email ? `(${user.email})` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="primary-button" disabled={busy || !groupUserId}>
+              Add to group
+            </button>
+          </form>
+          <div className="group-member-list">
+            {members.map((member) => (
+              <article className="group-member-row" key={`${member.groupId}-${member.userId}`}>
+                <div>
+                  <strong>{member.userName}</strong>
+                  <span>{member.userEmail ?? "No email"}</span>
+                </div>
+                <span>{member.status}</span>
+                <span>{member.isGroupAdmin ? "Group admin" : "Member"}</span>
+                <div className="group-member-actions">
+                  {member.status === "pending" ? (
+                    <>
+                      <button className="text-button" disabled={busy} onClick={() => onApprove(member.groupId, member.userId)}>
+                        Approve
+                      </button>
+                      <button className="text-button danger" disabled={busy} onClick={() => onReject(member.groupId, member.userId)}>
+                        Reject
+                      </button>
+                    </>
+                  ) : null}
+                  {member.status === "approved" ? (
+                    <button className="text-button" disabled={busy} onClick={() => onSetAdmin(member.groupId, member.userId, !member.isGroupAdmin)}>
+                      {member.isGroupAdmin ? "Remove admin" : "Make admin"}
+                    </button>
+                  ) : null}
+                  <button className="text-button danger" disabled={busy} onClick={() => onRemoveMember(member.groupId, member.userId)}>
+                    Kick
+                  </button>
+                </div>
+              </article>
+            ))}
+            {members.length === 0 ? <p className="muted">No members loaded.</p> : null}
+          </div>
+        </section>
+      ) : canManageAny ? (
+        <section className="group-admin-panel group-admin-placeholder">
+          <div className="section-heading">
+            <h2>Group management</h2>
+            <span>{isMainAdmin ? "Main admin" : "Group admin"}</span>
+          </div>
+          <p className="muted">Select a group on the left to manage members and access requests.</p>
+          {manageableGroups.length > 0 ? (
+            <div className="group-quick-picks">
+              {manageableGroups.map((group) => (
+                <button className="text-button" key={group.id} type="button" onClick={() => onSelectGroup(group.id)}>
+                  {group.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
     </section>
   );
 }
@@ -1623,7 +1966,8 @@ function AdminCentre({
   redemptions,
   creditRequests,
   busy,
-  onAction
+  onAction,
+  onOpenGroups
 }: {
   summary: AdminSummary | null;
   users: AdminUser[];
@@ -1632,6 +1976,7 @@ function AdminCentre({
   creditRequests: CreditRequest[];
   busy: boolean;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
+  onOpenGroups: () => void;
 }) {
   const [creditUserId, setCreditUserId] = useState("");
   const [creditAmount, setCreditAmount] = useState(10);
@@ -1670,6 +2015,15 @@ function AdminCentre({
         <h2>Admin Centre</h2>
         <span>Transactions and platform view</span>
       </div>
+      <section className="admin-groups-link">
+        <div>
+          <strong>Group management</strong>
+          <p className="muted">Create groups, approve members, and assign group admins from the Groups screen.</p>
+        </div>
+        <button className="primary-button" type="button" onClick={onOpenGroups}>
+          Open Groups
+        </button>
+      </section>
       <div className="admin-grid">
         <Metric icon={<UserCircle2 size={18} />} label="Users" value={String(summary?.totalUsers ?? 0)} />
         <Metric icon={<Trophy size={18} />} label="Open bets" value={String(summary?.openBets ?? 0)} />

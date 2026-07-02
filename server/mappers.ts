@@ -12,10 +12,12 @@ type SideBetRow = {
   closes_at: string;
   settles_at: string | null;
   manager_id: string;
+  group_id?: string | null;
   winning_option_id: string | null;
   created_at: string;
   options: BetOption[];
   profiles?: { display_name: string } | null;
+  groups?: { name: string; visibility: "public" | "private" } | null;
   bet_entries?: BetEntryRow[];
 };
 
@@ -48,6 +50,9 @@ export function mapSideBet(row: SideBetRow, currentUserId?: string): SideBet {
     settlesAt: row.settles_at,
     managerId: row.manager_id,
     managerName: row.profiles?.display_name ?? "Unknown manager",
+    groupId: row.group_id ?? null,
+    groupName: row.groups?.name ?? null,
+    isPrivate: row.groups?.visibility === "private",
     participantCount: entries.length,
     potCredits: entries.reduce((total, entry) => total + Number(entry.stake_credits), 0),
     options: row.options,

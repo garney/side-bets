@@ -5,6 +5,8 @@ import type {
   CreditRequest,
   CreditRequestStatus,
   CreditTransaction,
+  Group,
+  GroupMember,
   Profile,
   RedemptionRequest,
   RedemptionStatus,
@@ -60,6 +62,40 @@ export const api = {
     apiFetch<ChatMessage>("/chat/messages", {
       method: "POST",
       body: JSON.stringify(payload)
+    }),
+  groups: () => apiFetch<Group[]>("/groups"),
+  createGroup: (payload: { name: string; visibility: "public" | "private"; logoUrl?: string | null }) =>
+    apiFetch<Group>("/groups", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  deleteGroup: (id: string) =>
+    apiFetch<{ ok: true }>(`/groups/${id}`, {
+      method: "DELETE"
+    }),
+  joinGroup: (id: string) =>
+    apiFetch<{ ok: true; status: Group["membershipStatus"] }>(`/groups/${id}/join`, {
+      method: "POST"
+    }),
+  groupMembers: (id: string) => apiFetch<GroupMember[]>(`/groups/${id}/members`),
+  addGroupMember: (id: string, payload: { userId: string; status?: "pending" | "approved"; isGroupAdmin?: boolean }) =>
+    apiFetch<GroupMember>(`/groups/${id}/members`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  reviewGroupMember: (groupId: string, userId: string, payload: { status: "approved" | "rejected" }) =>
+    apiFetch<GroupMember>(`/groups/${groupId}/members/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  setGroupAdmin: (groupId: string, userId: string, payload: { isGroupAdmin: boolean }) =>
+    apiFetch<GroupMember>(`/groups/${groupId}/members/${userId}/admin`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  removeGroupMember: (groupId: string, userId: string) =>
+    apiFetch<{ ok: true }>(`/groups/${groupId}/members/${userId}`, {
+      method: "DELETE"
     }),
   sideBets: (search: string, status: string) =>
     apiFetch<SideBet[]>(`/side-bets?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`),

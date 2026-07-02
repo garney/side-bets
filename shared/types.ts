@@ -12,6 +12,7 @@ export type Profile = {
   avatarUrl: string | null;
   creditsBalance: number;
   isAdmin: boolean;
+  isGroupAdmin: boolean;
 };
 
 export type SideBet = {
@@ -27,6 +28,9 @@ export type SideBet = {
   settlesAt: string | null;
   managerId: string;
   managerName: string;
+  groupId: string | null;
+  groupName: string | null;
+  isPrivate: boolean;
   participantCount: number;
   potCredits: number;
   options: BetOption[];
@@ -90,6 +94,31 @@ export type CreditRequest = {
   reviewedBy: string | null;
   reviewedAt: string | null;
   createdAt: string;
+};
+
+export type GroupVisibility = "public" | "private";
+export type GroupMembershipStatus = "none" | "pending" | "approved" | "rejected";
+
+export type Group = {
+  id: string;
+  name: string;
+  logoUrl: string | null;
+  visibility: GroupVisibility;
+  memberCount: number;
+  membershipStatus: GroupMembershipStatus;
+  isGroupAdmin: boolean;
+  createdAt: string;
+};
+
+export type GroupMember = {
+  groupId: string;
+  userId: string;
+  userName: string;
+  userEmail: string | null;
+  status: Exclude<GroupMembershipStatus, "none">;
+  isGroupAdmin: boolean;
+  createdAt: string;
+  reviewedAt: string | null;
 };
 
 export type ChatRoom = "general" | "side_bet";

@@ -9,6 +9,7 @@ export type AuthedRequest = Request & {
     displayName: string;
     avatarUrl: string | null;
     isAdmin: boolean;
+    isGroupAdmin: boolean;
   };
 };
 
@@ -52,13 +53,21 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     .select("user_id")
     .eq("user_id", user.id)
     .maybeSingle();
+  const { data: groupAdminRow } = await supabaseAdmin
+    .from("group_memberships")
+    .select("user_id")
+    .eq("user_id", user.id)
+    .eq("status", "approved")
+    .eq("is_group_admin", true)
+    .maybeSingle();
 
   (req as AuthedRequest).user = {
     id: user.id,
     email: user.email ?? null,
     displayName,
     avatarUrl,
-    isAdmin: Boolean(adminRow) || config.adminUserIds.has(user.id)
+    isAdmin: Boolean(adminRow) || config.adminUserIds.has(user.id),
+    isGroupAdmin: Boolean(groupAdminRow)
   };
   next();
 }
@@ -66,6 +75,15 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if (!(req as AuthedRequest).user?.isAdmin) {
     res.status(403).json({ error: "Admin access required" });
+    return;
+  }
+  next();
+}
+
+export function requireCreditAdmin(req: Request, res: Response, next: NextFunction) {
+  const user = (req as AuthedRequest).user;
+  if (!user?.isAdmin && !user?.isGroupAdmin) {
+    res.status(403).json({ error: "Admin or group admin access required" });
     return;
   }
   next();

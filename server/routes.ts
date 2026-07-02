@@ -10,10 +10,12 @@ import type {
   CreditRequest,
   CreditRequestStatus,
   CreditTransaction,
+  Group,
+  GroupMember,
   RedemptionRequest,
   RedemptionStatus
 } from "../shared/types.js";
-import { requireAdmin, requireAuth, type AuthedRequest } from "./auth.js";
+import { requireAdmin, requireAuth, requireCreditAdmin, type AuthedRequest } from "./auth.js";
 import { mapSideBet, mapSideBetDetail } from "./mappers.js";
 import { supabaseAdmin } from "./supabase.js";
 
@@ -81,6 +83,28 @@ const chatMessageSchema = z.object({
   body: z.string().trim().min(1).max(1000)
 });
 
+const reviewMembershipSchema = z.object({
+  status: z.enum(["approved", "rejected"])
+});
+
+const groupAdminSchema = z.object({
+  isGroupAdmin: z.boolean()
+});
+
+const addGroupMemberSchema = z.object({
+  userId: z.string().uuid(),
+  status: z.enum(["pending", "approved"]).default("approved"),
+  isGroupAdmin: z.boolean().default(false)
+});
+
+const createGroupSchema = z.object({
+  name: z.string().min(3).max(80),
+  visibility: z.enum(["public", "private"]).default("private"),
+  logoUrl: z.string().url().nullable().optional()
+});
+
+const STATION_ALPHA_GROUP_NAME = "Station Alpha";
+
 type RealtimeNotifier = {
   sideBetChanged: (betId: string, reason: string) => Promise<void>;
   walletChanged: (userIds: string | string[], reason: string) => Promise<void>;
@@ -118,7 +142,8 @@ export function createApiRouter(realtime: RealtimeNotifier) {
       email: data.email,
       avatarUrl: data.avatar_url,
       creditsBalance: Number(data.credits_balance),
-      isAdmin: user.isAdmin
+      isAdmin: user.isAdmin,
+      isGroupAdmin: user.isGroupAdmin
     });
   });
 
@@ -141,6 +166,10 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     if (room === "side_bet") {
       if (!sideBetId) {
         res.status(400).json({ error: "sideBetId is required for side bet chat" });
+        return;
+      }
+      if (!(await canViewSideBet(sideBetId, (req as AuthedRequest).user))) {
+        res.status(403).json({ error: "You do not have access to this side bet" });
         return;
       }
       query = query.eq("side_bet_id", sideBetId);
@@ -176,6 +205,10 @@ export function createApiRouter(realtime: RealtimeNotifier) {
       res.status(400).json({ error: "sideBetId is required for side bet chat" });
       return;
     }
+    if (sideBetId && !(await canViewSideBet(sideBetId, user))) {
+      res.status(403).json({ error: "You do not have access to this side bet" });
+      return;
+    }
 
     const { data, error } = await supabaseAdmin
       .from("chat_messages")
@@ -202,6 +235,257 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     res.status(201).json(message);
   });
 
+  router.get("/groups", requireAuth, async (req, res) => {
+    const user = (req as AuthedRequest).user;
+    const { data, error } = await supabaseAdmin
+      .from("groups")
+      .select("*, group_memberships(user_id, status, is_group_admin)")
+      .order("name", { ascending: true });
+
+    if (error) {
+      if (isMissingGroupsTable(error)) {
+        res.json([]);
+        return;
+      }
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.json(data.map((group) => mapGroup(group, user.id)));
+  });
+
+  router.post("/groups", requireAuth, async (req, res) => {
+    const parsed = createGroupSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const user = (req as AuthedRequest).user;
+    const { data: group, error } = await supabaseAdmin
+      .from("groups")
+      .insert({
+        name: parsed.data.name,
+        visibility: parsed.data.visibility,
+        logo_url: parsed.data.logoUrl ?? null
+      })
+      .select("*")
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    const { error: membershipError } = await supabaseAdmin.from("group_memberships").insert({
+      group_id: group.id,
+      user_id: user.id,
+      status: "approved",
+      is_group_admin: true,
+      reviewed_by: user.id,
+      reviewed_at: new Date().toISOString()
+    });
+
+    if (membershipError) {
+      res.status(500).json({ error: membershipError.message });
+      return;
+    }
+
+    await realtime.adminChanged("groups");
+    res.status(201).json(mapGroup({ ...group, group_memberships: [{ user_id: user.id, status: "approved", is_group_admin: true }] }, user.id));
+  });
+
+  router.delete("/groups/:id", requireAuth, async (req, res) => {
+    const user = (req as AuthedRequest).user;
+    if (!(await canManageGroup(req.params.id, user))) {
+      res.status(403).json({ error: "Group admin access required" });
+      return;
+    }
+
+    const { error } = await supabaseAdmin.from("groups").delete().eq("id", req.params.id);
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    await realtime.adminChanged("groups");
+    res.json({ ok: true });
+  });
+
+  router.post("/groups/:id/join", requireAuth, async (req, res) => {
+    const user = (req as AuthedRequest).user;
+    const { data: group, error: groupError } = await supabaseAdmin.from("groups").select("*").eq("id", req.params.id).single();
+
+    if (groupError || !group) {
+      res.status(404).json({ error: "Group not found" });
+      return;
+    }
+
+    const status = group.visibility === "private" ? "pending" : "approved";
+    const { error } = await supabaseAdmin.from("group_memberships").upsert(
+      {
+        group_id: group.id,
+        user_id: user.id,
+        status,
+        reviewed_at: status === "approved" ? new Date().toISOString() : null
+      },
+      { onConflict: "group_id,user_id" }
+    );
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    await realtime.adminChanged("groups");
+    res.status(201).json({ ok: true, status });
+  });
+
+  router.get("/groups/:id/members", requireAuth, async (req, res) => {
+    const user = (req as AuthedRequest).user;
+    if (!(await canManageGroup(req.params.id, user))) {
+      res.status(403).json({ error: "Group admin access required" });
+      return;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("group_memberships")
+      .select("*, profiles!group_memberships_user_id_fkey(display_name, email)")
+      .eq("group_id", req.params.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.json(data.map(mapGroupMember));
+  });
+
+  router.post("/groups/:id/members", requireAuth, async (req, res) => {
+    const parsed = addGroupMemberSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const user = (req as AuthedRequest).user;
+    if (!(await canManageGroup(req.params.id, user))) {
+      res.status(403).json({ error: "Group admin access required" });
+      return;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("group_memberships")
+      .upsert(
+        {
+          group_id: req.params.id,
+          user_id: parsed.data.userId,
+          status: parsed.data.status,
+          is_group_admin: parsed.data.isGroupAdmin,
+          reviewed_by: user.id,
+          reviewed_at: new Date().toISOString()
+        },
+        { onConflict: "group_id,user_id" }
+      )
+      .select("*, profiles!group_memberships_user_id_fkey(display_name, email)")
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    await realtime.adminChanged("groups");
+    res.status(201).json(mapGroupMember(data));
+  });
+
+  router.patch("/groups/:id/members/:userId", requireAuth, async (req, res) => {
+    const parsed = reviewMembershipSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const user = (req as AuthedRequest).user;
+    if (!(await canManageGroup(req.params.id, user))) {
+      res.status(403).json({ error: "Group admin access required" });
+      return;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("group_memberships")
+      .update({
+        status: parsed.data.status,
+        reviewed_by: user.id,
+        reviewed_at: new Date().toISOString()
+      })
+      .eq("group_id", req.params.id)
+      .eq("user_id", req.params.userId)
+      .select("*, profiles!group_memberships_user_id_fkey(display_name, email)")
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    await realtime.adminChanged("groups");
+    res.json(mapGroupMember(data));
+  });
+
+  router.patch("/groups/:id/members/:userId/admin", requireAuth, async (req, res) => {
+    const parsed = groupAdminSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const user = (req as AuthedRequest).user;
+    if (!(await canManageGroup(req.params.id, user))) {
+      res.status(403).json({ error: "Group admin access required" });
+      return;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("group_memberships")
+      .update({ is_group_admin: parsed.data.isGroupAdmin })
+      .eq("group_id", req.params.id)
+      .eq("user_id", req.params.userId)
+      .select("*, profiles!group_memberships_user_id_fkey(display_name, email)")
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    await realtime.adminChanged("groups");
+    res.json(mapGroupMember(data));
+  });
+
+  router.delete("/groups/:id/members/:userId", requireAuth, async (req, res) => {
+    const user = (req as AuthedRequest).user;
+    if (!(await canManageGroup(req.params.id, user))) {
+      res.status(403).json({ error: "Group admin access required" });
+      return;
+    }
+
+    const { error } = await supabaseAdmin
+      .from("group_memberships")
+      .delete()
+      .eq("group_id", req.params.id)
+      .eq("user_id", req.params.userId);
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    await realtime.adminChanged("groups");
+    res.json({ ok: true });
+  });
+
   router.get("/side-bets", requireAuth, async (req, res) => {
     const user = (req as AuthedRequest).user;
     const search = String(req.query.search ?? "").trim();
@@ -209,7 +493,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
 
     let query = supabaseAdmin
       .from("side_bets")
-      .select("*, profiles!side_bets_manager_id_fkey(display_name), bet_entries(id, side_bet_id, user_id, option_id, stake_credits, created_at)")
+      .select("*, profiles!side_bets_manager_id_fkey(display_name), groups(name, visibility), bet_entries(id, side_bet_id, user_id, option_id, stake_credits, created_at)")
       .order("created_at", { ascending: false });
 
     if (search) {
@@ -226,13 +510,20 @@ export function createApiRouter(realtime: RealtimeNotifier) {
       return;
     }
 
-    res.json(data.map((row) => mapSideBet(row, user.id)));
+    const visibleRows = [];
+    for (const row of data) {
+      if (await canViewGroup(row.group_id ?? null, user)) {
+        visibleRows.push(row);
+      }
+    }
+
+    res.json(visibleRows.map((row) => mapSideBet(row, user.id)));
   });
 
   router.get("/side-bets/:id", requireAuth, async (req, res) => {
     const { data, error } = await supabaseAdmin
       .from("side_bets")
-      .select("*, profiles!side_bets_manager_id_fkey(display_name), bet_entries(*, profiles!bet_entries_user_id_fkey(display_name, email))")
+      .select("*, profiles!side_bets_manager_id_fkey(display_name), groups(name, visibility), bet_entries(*, profiles!bet_entries_user_id_fkey(display_name, email))")
       .eq("id", req.params.id)
       .order("created_at", { referencedTable: "bet_entries", ascending: false })
       .single();
@@ -243,6 +534,10 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     }
 
     const user = (req as AuthedRequest).user;
+    if (!(await canViewGroup(data.group_id ?? null, user))) {
+      res.status(403).json({ error: "You do not have access to this side bet" });
+      return;
+    }
     res.json(mapSideBetDetail(data, user.id));
   });
 
@@ -255,11 +550,13 @@ export function createApiRouter(realtime: RealtimeNotifier) {
 
     const user = (req as AuthedRequest).user;
     const options: BetOption[] = parsed.data.options.map((label) => ({ id: randomUUID(), label }));
+    const stationAlphaGroupId = await getStationAlphaGroupId();
 
     const { data, error } = await supabaseAdmin
       .from("side_bets")
       .insert({
         manager_id: user.id,
+        group_id: stationAlphaGroupId,
         title: parsed.data.title,
         description: parsed.data.description,
         source_url: parsed.data.sourceUrl ?? null,
@@ -269,7 +566,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
         closes_at: parsed.data.closesAt,
         options
       })
-      .select("*, profiles!side_bets_manager_id_fkey(display_name), bet_entries(id, side_bet_id, user_id, option_id, stake_credits, created_at)")
+      .select("*, profiles!side_bets_manager_id_fkey(display_name), groups(name, visibility), bet_entries(id, side_bet_id, user_id, option_id, stake_credits, created_at)")
       .single();
 
     if (error) {
@@ -303,6 +600,10 @@ export function createApiRouter(realtime: RealtimeNotifier) {
 
     if (bet.manager_id !== user.id) {
       res.status(403).json({ error: "Only the side bet creator can edit this side bet" });
+      return;
+    }
+    if (!(await canViewGroup(bet.group_id ?? null, user))) {
+      res.status(403).json({ error: "You do not have access to this side bet" });
       return;
     }
 
@@ -339,7 +640,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
         options: hasEntries ? currentOptions : nextOptions
       })
       .eq("id", bet.id)
-      .select("*, profiles!side_bets_manager_id_fkey(display_name), bet_entries(*, profiles!bet_entries_user_id_fkey(display_name, email))")
+      .select("*, profiles!side_bets_manager_id_fkey(display_name), groups(name, visibility), bet_entries(*, profiles!bet_entries_user_id_fkey(display_name, email))")
       .order("created_at", { referencedTable: "bet_entries", ascending: false })
       .single();
 
@@ -363,6 +664,10 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     const { data: bet, error: betError } = await supabaseAdmin.from("side_bets").select("*").eq("id", req.params.id).single();
     if (betError || !bet) {
       res.status(404).json({ error: "Side bet not found" });
+      return;
+    }
+    if (!(await canViewGroup(bet.group_id ?? null, user))) {
+      res.status(403).json({ error: "You do not have access to this side bet" });
       return;
     }
 
@@ -463,6 +768,10 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     const { data: bet, error: betError } = await supabaseAdmin.from("side_bets").select("*").eq("id", req.params.id).single();
     if (betError || !bet) {
       res.status(404).json({ error: "Side bet not found" });
+      return;
+    }
+    if (!(await canViewGroup(bet.group_id ?? null, user))) {
+      res.status(403).json({ error: "You do not have access to this side bet" });
       return;
     }
 
@@ -825,7 +1134,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     res.status(201).json(mapCreditRequest(data));
   });
 
-  router.get("/admin/summary", requireAuth, requireAdmin, async (_req, res) => {
+  router.get("/admin/summary", requireAuth, requireCreditAdmin, async (_req, res) => {
     const [profiles, bets, openBets, transactions] = await Promise.all([
       supabaseAdmin.from("profiles").select("credits_balance", { count: "exact" }),
       supabaseAdmin.from("side_bets").select("id", { count: "exact", head: true }),
@@ -844,7 +1153,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     res.json(summary);
   });
 
-  router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
+  router.get("/admin/users", requireAuth, requireCreditAdmin, async (_req, res) => {
     const { data, error } = await supabaseAdmin
       .from("profiles")
       .select("id, display_name, email, credits_balance")
@@ -869,7 +1178,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     res.json(users);
   });
 
-  router.post("/admin/credits", requireAuth, requireAdmin, async (req, res) => {
+  router.post("/admin/credits", requireAuth, requireCreditAdmin, async (req, res) => {
     const parsed = adminCreditAdjustmentSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten() });
@@ -917,7 +1226,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     res.status(201).json({ ok: true, creditsBalance: nextBalance });
   });
 
-  router.get("/admin/transactions", requireAuth, requireAdmin, async (_req, res) => {
+  router.get("/admin/transactions", requireAuth, requireCreditAdmin, async (_req, res) => {
     const { data, error } = await supabaseAdmin
       .from("credit_transactions")
       .select("*")
@@ -930,7 +1239,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     res.json(data.map(mapTransaction));
   });
 
-  router.get("/admin/redemptions", requireAuth, requireAdmin, async (_req, res) => {
+  router.get("/admin/redemptions", requireAuth, requireCreditAdmin, async (_req, res) => {
     const { data, error } = await supabaseAdmin
       .from("redemption_requests")
       .select("*, profiles!redemption_requests_user_id_fkey(display_name, email)")
@@ -945,7 +1254,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     res.json(data.map(mapRedemptionRequest));
   });
 
-  router.get("/admin/credit-requests", requireAuth, requireAdmin, async (_req, res) => {
+  router.get("/admin/credit-requests", requireAuth, requireCreditAdmin, async (_req, res) => {
     const { data, error } = await supabaseAdmin
       .from("credit_requests")
       .select("*, profiles!credit_requests_user_id_fkey(display_name, email)")
@@ -964,7 +1273,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     res.json(data.map(mapCreditRequest));
   });
 
-  router.patch("/admin/redemptions/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.patch("/admin/redemptions/:id", requireAuth, requireCreditAdmin, async (req, res) => {
     const parsed = updateRedemptionSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten() });
@@ -1048,7 +1357,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     res.json(mapRedemptionRequest(updated));
   });
 
-  router.patch("/admin/credit-requests/:id", requireAuth, requireAdmin, async (req, res) => {
+  router.patch("/admin/credit-requests/:id", requireAuth, requireCreditAdmin, async (req, res) => {
     const parsed = updateCreditRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten() });
@@ -1215,6 +1524,90 @@ function mapChatMessage(row: {
   };
 }
 
+function mapGroup(row: {
+  id: string;
+  name: string;
+  logo_url?: string | null;
+  visibility: Group["visibility"];
+  created_at: string;
+  group_memberships?: { user_id: string; status: Group["membershipStatus"]; is_group_admin: boolean }[];
+}, currentUserId: string): Group {
+  const memberships = row.group_memberships ?? [];
+  const currentMembership = memberships.find((membership) => membership.user_id === currentUserId);
+  return {
+    id: row.id,
+    name: row.name,
+    logoUrl: row.logo_url ?? null,
+    visibility: row.visibility,
+    memberCount: memberships.filter((membership) => membership.status === "approved").length,
+    membershipStatus: currentMembership?.status ?? "none",
+    isGroupAdmin: Boolean(currentMembership?.is_group_admin && currentMembership.status === "approved"),
+    createdAt: row.created_at
+  };
+}
+
+function mapGroupMember(row: {
+  group_id: string;
+  user_id: string;
+  status: GroupMember["status"];
+  is_group_admin: boolean;
+  created_at: string;
+  reviewed_at: string | null;
+  profiles?: { display_name: string; email: string | null } | null;
+}): GroupMember {
+  return {
+    groupId: row.group_id,
+    userId: row.user_id,
+    userName: row.profiles?.display_name ?? "Unknown user",
+    userEmail: row.profiles?.email ?? null,
+    status: row.status,
+    isGroupAdmin: row.is_group_admin,
+    createdAt: row.created_at,
+    reviewedAt: row.reviewed_at
+  };
+}
+
+async function getStationAlphaGroupId() {
+  const { data, error } = await supabaseAdmin.from("groups").select("id").eq("name", STATION_ALPHA_GROUP_NAME).single();
+  if (error || !data) {
+    throw new Error("Station Alpha group is not set up. Run supabase/migrations/0005_groups.sql.");
+  }
+  return data.id as string;
+}
+
+async function canViewSideBet(sideBetId: string, user: AuthedRequest["user"]) {
+  const { data, error } = await supabaseAdmin.from("side_bets").select("group_id").eq("id", sideBetId).single();
+  if (error || !data) return false;
+  return canViewGroup(data.group_id ?? null, user);
+}
+
+async function canViewGroup(groupId: string | null, user: AuthedRequest["user"]) {
+  if (!groupId || user.isAdmin) return true;
+  const { data: group } = await supabaseAdmin.from("groups").select("visibility").eq("id", groupId).single();
+  if (group?.visibility === "public") return true;
+  const { data: membership } = await supabaseAdmin
+    .from("group_memberships")
+    .select("status")
+    .eq("group_id", groupId)
+    .eq("user_id", user.id)
+    .eq("status", "approved")
+    .maybeSingle();
+  return Boolean(membership);
+}
+
+async function canManageGroup(groupId: string, user: AuthedRequest["user"]) {
+  if (user.isAdmin) return true;
+  const { data } = await supabaseAdmin
+    .from("group_memberships")
+    .select("user_id")
+    .eq("group_id", groupId)
+    .eq("user_id", user.id)
+    .eq("status", "approved")
+    .eq("is_group_admin", true)
+    .maybeSingle();
+  return Boolean(data);
+}
+
 function isMissingRedemptionTable(error: { code?: string; message?: string }) {
   return (
     error.code === "42P01" ||
@@ -1222,6 +1615,10 @@ function isMissingRedemptionTable(error: { code?: string; message?: string }) {
     error.message?.includes("schema cache") ||
     false
   );
+}
+
+function isMissingGroupsTable(error: { code?: string; message?: string }) {
+  return error.code === "42P01" || error.message?.includes("groups") || error.message?.includes("schema cache") || false;
 }
 
 function isMissingCreditRequestTable(error: { code?: string; message?: string }) {
