@@ -27,7 +27,8 @@ const createBetSchema = z.object({
   houseFeePercent: z.number().min(0).max(100).default(0),
   startsAt: z.string().datetime(),
   closesAt: z.string().datetime(),
-  options: z.array(z.string().min(1).max(80)).min(2).max(12)
+  options: z.array(z.string().min(1).max(80)).min(2).max(12),
+  groupId: z.string().uuid().optional()
 });
 
 const updateBetSchema = z.object({
@@ -550,13 +551,19 @@ export function createApiRouter(realtime: RealtimeNotifier) {
 
     const user = (req as AuthedRequest).user;
     const options: BetOption[] = parsed.data.options.map((label) => ({ id: randomUUID(), label }));
-    const stationAlphaGroupId = await getStationAlphaGroupId();
+    let groupId: string;
+    try {
+      groupId = await resolveCreateBetGroupId(parsed.data.groupId, user);
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : "Select a group for this side bet" });
+      return;
+    }
 
     const { data, error } = await supabaseAdmin
       .from("side_bets")
       .insert({
         manager_id: user.id,
-        group_id: stationAlphaGroupId,
+        group_id: groupId,
         title: parsed.data.title,
         description: parsed.data.description,
         source_url: parsed.data.sourceUrl ?? null,
@@ -1579,6 +1586,66 @@ async function canViewSideBet(sideBetId: string, user: AuthedRequest["user"]) {
   const { data, error } = await supabaseAdmin.from("side_bets").select("group_id").eq("id", sideBetId).single();
   if (error || !data) return false;
   return canViewGroup(data.group_id ?? null, user);
+}
+
+async function getCreatableGroupIds(user: AuthedRequest["user"]) {
+  if (user.isAdmin) {
+    const { data, error } = await supabaseAdmin.from("groups").select("id").order("name", { ascending: true });
+    if (error) {
+      throw new Error("Groups are not set up yet. Run supabase/migrations/0005_groups.sql.");
+    }
+    return (data ?? []).map((row) => row.id as string);
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("group_memberships")
+    .select("group_id")
+    .eq("user_id", user.id)
+    .eq("status", "approved")
+    .order("group_id", { ascending: true });
+
+  if (error) {
+    throw new Error("Groups are not set up yet. Run supabase/migrations/0005_groups.sql.");
+  }
+
+  return (data ?? []).map((row) => row.group_id as string);
+}
+
+async function canCreateBetInGroup(groupId: string, user: AuthedRequest["user"]) {
+  if (user.isAdmin) return true;
+
+  const { data } = await supabaseAdmin
+    .from("group_memberships")
+    .select("user_id")
+    .eq("group_id", groupId)
+    .eq("user_id", user.id)
+    .eq("status", "approved")
+    .maybeSingle();
+
+  return Boolean(data);
+}
+
+async function resolveCreateBetGroupId(groupId: string | undefined, user: AuthedRequest["user"]) {
+  if (groupId) {
+    if (!(await canCreateBetInGroup(groupId, user))) {
+      throw new Error("You do not have permission to create side bets in this group");
+    }
+    return groupId;
+  }
+
+  const creatableGroupIds = await getCreatableGroupIds(user);
+  if (creatableGroupIds.length === 1) {
+    return creatableGroupIds[0];
+  }
+  if (creatableGroupIds.length === 0) {
+    const stationAlphaGroupId = await getStationAlphaGroupId();
+    if (await canCreateBetInGroup(stationAlphaGroupId, user)) {
+      return stationAlphaGroupId;
+    }
+    throw new Error("Join a group before creating a side bet");
+  }
+
+  throw new Error("Select a group for this side bet");
 }
 
 async function canViewGroup(groupId: string | null, user: AuthedRequest["user"]) {

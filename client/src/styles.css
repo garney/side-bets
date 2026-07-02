@@ -590,6 +590,27 @@ textarea:focus {
   padding: 0 6px;
 }
 
+.bet-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.bet-group-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #eef7f4;
+  color: #173d3a;
+  border: 1px solid #cfe2dc;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .choice-label {
   display: inline-flex;
   align-items: center;

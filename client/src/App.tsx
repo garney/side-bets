@@ -51,7 +51,8 @@ const defaultForm = {
   buyInCredits: "",
   closesDate: "",
   closesTime: "11:30",
-  options: "No\nYES"
+  options: "No\nYES",
+  groupId: ""
 };
 
 export function App() {
@@ -94,6 +95,11 @@ export function App() {
   const chatOpenRef = useRef(false);
 
   const activeBets = useMemo(() => sideBets.filter((bet) => bet.status === "open").length, [sideBets]);
+  const creatableGroups = useMemo(() => {
+    if (!profile) return [];
+    if (profile.isAdmin) return groups;
+    return groups.filter((group) => group.membershipStatus === "approved");
+  }, [groups, profile]);
   const activeSideBetId = routeSideBetId ?? selectedSideBetId;
 
   const refreshSideBetList = useCallback(async () => {
@@ -462,11 +468,23 @@ export function App() {
     setSelectedSideBetLoading(false);
   }
 
+  function openCreateModal() {
+    setForm((current) => {
+      const currentGroupValid = creatableGroups.some((group) => group.id === current.groupId);
+      const defaultGroupId = creatableGroups.length === 1 ? creatableGroups[0].id : currentGroupValid ? current.groupId : creatableGroups[0]?.id ?? "";
+      return { ...current, groupId: defaultGroupId };
+    });
+    setCreateModalOpen(true);
+  }
+
   async function createBet(event: FormEvent) {
     event.preventDefault();
     await withAction(async () => {
       if (!form.buyInCredits || !form.closesDate || !form.closesTime) {
         throw new Error("Add a buy-in amount, close date, and close time before creating the side bet");
+      }
+      if (creatableGroups.length > 1 && !form.groupId) {
+        throw new Error("Select which group this side bet is for");
       }
 
       const now = new Date();
@@ -486,7 +504,8 @@ export function App() {
         options: form.options
           .split("\n")
           .map((option) => option.trim())
-          .filter(Boolean)
+          .filter(Boolean),
+        ...(form.groupId ? { groupId: form.groupId } : {})
       });
       setCreateModalOpen(false);
     }, "Side bet created");
@@ -650,14 +669,21 @@ export function App() {
               creditRequests={creditRequests}
               onSearchChange={setSearch}
               onStatusChange={setStatus}
-              onCreate={() => setCreateModalOpen(true)}
+              onCreate={openCreateModal}
               onView={openSideBetPage}
               onAction={withAction}
               onSettleRequest={setPendingSettlement}
             />
           ) : null}
           {createModalOpen ? (
-            <CreateSideBetModal form={form} busy={busy} onClose={() => setCreateModalOpen(false)} onSubmit={createBet} onChange={setForm} />
+            <CreateSideBetModal
+              form={form}
+              creatableGroups={creatableGroups}
+              busy={busy}
+              onClose={() => setCreateModalOpen(false)}
+              onSubmit={createBet}
+              onChange={setForm}
+            />
           ) : null}
           {selectedSideBetId ? (
             <SideBetModal
@@ -923,7 +949,15 @@ function SideBetListView({
                       </div>
                     </div>
                     <p>{bet.description}</p>
-                    <span className="muted">Manager: {bet.managerName}</span>
+                    <div className="bet-meta">
+                      <span className="muted">Manager: {bet.managerName}</span>
+                      {bet.groupName ? (
+                        <span className="bet-group-pill">
+                          {bet.groupName}
+                          {bet.isPrivate ? " · private" : ""}
+                        </span>
+                      ) : null}
+                    </div>
                     {bet.currentUserEntry ? <ChoiceLabel label={bet.currentUserEntry.optionLabel} compact /> : null}
                   </div>
                   <span>{bet.buyInCredits} cr</span>
@@ -1237,17 +1271,22 @@ function Metric({ icon, label, value }: { icon: ReactNode; label: string; value:
 
 function CreateSideBetModal({
   form,
+  creatableGroups,
   busy,
   onClose,
   onSubmit,
   onChange
 }: {
   form: typeof defaultForm;
+  creatableGroups: Group[];
   busy: boolean;
   onClose: () => void;
   onSubmit: (event: FormEvent) => Promise<void>;
   onChange: (form: typeof defaultForm) => void;
 }) {
+  const selectedGroup = creatableGroups.find((group) => group.id === form.groupId) ?? null;
+  const requiresGroupSelection = creatableGroups.length > 1;
+
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div className="modal-panel" role="dialog" aria-modal="true" aria-label="Create side bet" onClick={(event) => event.stopPropagation()}>
@@ -1259,6 +1298,25 @@ function CreateSideBetModal({
             <h2>Create Side Bet</h2>
             <span>Draft details</span>
           </div>
+          {creatableGroups.length === 0 ? (
+            <p className="muted">Join a group before creating a side bet.</p>
+          ) : requiresGroupSelection ? (
+            <label>
+              Group
+              <select value={form.groupId} onChange={(event) => onChange({ ...form, groupId: event.target.value })} required>
+                <option value="">Select group</option>
+                {creatableGroups.map((group) => (
+                  <option value={group.id} key={group.id}>
+                    {group.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <p className="muted">
+              Group: <strong>{selectedGroup?.name ?? creatableGroups[0]?.name}</strong>
+            </p>
+          )}
           <label>
             Title
             <input value={form.title} onChange={(event) => onChange({ ...form, title: event.target.value })} />
@@ -1295,7 +1353,10 @@ function CreateSideBetModal({
             Options
             <textarea value={form.options} onChange={(event) => onChange({ ...form, options: event.target.value })} />
           </label>
-          <button className="primary-button" disabled={busy || !form.buyInCredits || !form.closesDate || !form.closesTime}>
+          <button
+            className="primary-button"
+            disabled={busy || creatableGroups.length === 0 || !form.buyInCredits || !form.closesDate || !form.closesTime || (requiresGroupSelection && !form.groupId)}
+          >
             Create side bet
           </button>
         </form>
