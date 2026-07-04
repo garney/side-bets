@@ -128,8 +128,12 @@ jobs:
           mkdir -p "$APP_DIR/.npm-cache"
           npm ci --omit=dev --cache "$APP_DIR/.npm-cache"
 
-          ln -sfn "$RELEASE_DIR" "$APP_DIR/current"
+          if [ -d "$APP_DIR/current" ] && [ ! -L "$APP_DIR/current" ]; then
+            mv "$APP_DIR/current" "$APP_DIR/current.backup.$(date +%Y%m%d%H%M%S)"
+          fi
+          ln -sfnT "$RELEASE_DIR" "$APP_DIR/current"
           cd "$APP_DIR/current"
+          test -f dist/server/server/index.js
 
           export PM2_HOME="$APP_DIR/.pm2"
           mkdir -p "$PM2_HOME"

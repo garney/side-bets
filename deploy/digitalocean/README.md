@@ -288,6 +288,8 @@ sudo mkdir -p /var/www/side-bets/releases
 sudo chown -R deploy:deploy /var/www/side-bets
 ```
 
+On first pipeline deploy, if `/var/www/side-bets/current` is still a real Git checkout directory, the workflow moves it aside to a timestamped `current.backup.*` directory and replaces it with a symlink to the latest release.
+
 It also assumes Node.js and PM2 are already installed.
 
 You do not need to keep a Git checkout on the server for pipeline deployments. GitHub ships a built release bundle directly to the droplet.
