@@ -125,7 +125,8 @@ jobs:
           ENV
 
           cd "$RELEASE_DIR"
-          npm ci --omit=dev
+          mkdir -p "$APP_DIR/.npm-cache"
+          npm ci --omit=dev --cache "$APP_DIR/.npm-cache"
 
           ln -sfn "$RELEASE_DIR" "$APP_DIR/current"
           cd "$APP_DIR/current"

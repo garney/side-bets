@@ -292,6 +292,24 @@ It also assumes Node.js and PM2 are already installed.
 
 You do not need to keep a Git checkout on the server for pipeline deployments. GitHub ships a built release bundle directly to the droplet.
 
+The workflow uses an app-local npm cache at:
+
+```text
+/var/www/side-bets/.npm-cache
+```
+
+If a previous manual command created root-owned npm cache files for the deploy user, fix the home cache once:
+
+```bash
+sudo chown -R deploy:deploy /home/deploy/.npm
+```
+
+Also make sure the app directory is owned by the deploy user:
+
+```bash
+sudo chown -R deploy:deploy /var/www/side-bets
+```
+
 If you want GitHub Actions to sync Mosquitto and Nginx config, configure passwordless sudo for the deploy user. A narrowly scoped sudoers file is better than full passwordless sudo:
 
 ```bash
