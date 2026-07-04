@@ -423,6 +423,14 @@ Your Google OAuth redirect URI stays the Supabase callback URL:
 https://your-project-ref.supabase.co/auth/v1/callback
 ```
 
+## DigitalOcean VPS Deployment
+
+For the planned move from Render to a Sydney DigitalOcean droplet with Mosquitto, PM2, Nginx, and Let's Encrypt, use:
+
+```text
+deploy/digitalocean/README.md
+```
+
 ## Docker
 
 Run a production-like container:
