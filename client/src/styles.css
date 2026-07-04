@@ -532,6 +532,13 @@ textarea:focus {
   padding: 16px 16px 0;
 }
 
+.bet-list-loading {
+  display: grid;
+  place-items: center;
+  min-height: 220px;
+  padding: 32px 16px;
+}
+
 .table {
   display: grid;
 }
@@ -676,8 +683,56 @@ textarea:focus {
 }
 
 .side-bet-focus {
+  position: relative;
   clear: both;
   padding: 16px;
+}
+
+.side-bet-focus.is-busy {
+  pointer-events: none;
+}
+
+.side-bet-loading {
+  display: grid;
+  place-items: center;
+  min-height: 240px;
+}
+
+.side-bet-busy-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(1px);
+}
+
+.loading-spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #173d3a;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.loading-spinner-icon {
+  flex: 0 0 auto;
+  animation: spin 0.8s linear infinite;
+}
+
+.busy-button-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .side-bet-page {

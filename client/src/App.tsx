@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Bell, CheckCircle2, CircleDollarSign, LogOut, MessageCircle, Plus, Search, Send, ShieldCheck, Trophy, UserCircle2, X } from "lucide-react";
+import { Bell, CheckCircle2, CircleDollarSign, Loader2, LogOut, MessageCircle, Plus, Search, Send, ShieldCheck, Trophy, UserCircle2, X } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
 import type {
   AdminSummary,
@@ -59,6 +59,7 @@ export function App() {
   const [sessionState, setSessionState] = useState<SessionState>("loading");
   const [profile, setProfile] = useState<Profile | null>(null);
   const [sideBets, setSideBets] = useState<SideBet[]>([]);
+  const [sideBetsLoading, setSideBetsLoading] = useState(false);
   const [selectedSideBetId, setSelectedSideBetId] = useState<string | null>(null);
   const [routeSideBetId, setRouteSideBetId] = useState<string | null>(() => getSideBetIdFromPath());
   const [selectedSideBet, setSelectedSideBet] = useState<SideBetDetail | null>(null);
@@ -143,24 +144,29 @@ export function App() {
   }, []);
 
   const refreshData = useCallback(async () => {
-    const [me, bets, wallet, walletRedemptions, walletCreditRequests, nextGroups] = await Promise.all([
-      api.me(),
-      api.sideBets(search, status),
-      api.transactions(),
-      api.redemptions(),
-      api.creditRequests(),
-      api.groups()
-    ]);
-    setProfile(me);
-    setSideBets(bets);
-    setTransactions(wallet);
-    setRedemptions(walletRedemptions);
-    setCreditRequests(walletCreditRequests);
-    setGroups(nextGroups);
-    setSelectedGroupId((current) => pickDefaultGroupId(nextGroups, me, current));
+    setSideBetsLoading(true);
+    try {
+      const [me, bets, wallet, walletRedemptions, walletCreditRequests, nextGroups] = await Promise.all([
+        api.me(),
+        api.sideBets(search, status),
+        api.transactions(),
+        api.redemptions(),
+        api.creditRequests(),
+        api.groups()
+      ]);
+      setProfile(me);
+      setSideBets(bets);
+      setTransactions(wallet);
+      setRedemptions(walletRedemptions);
+      setCreditRequests(walletCreditRequests);
+      setGroups(nextGroups);
+      setSelectedGroupId((current) => pickDefaultGroupId(nextGroups, me, current));
 
-    if (me.isAdmin || me.isGroupAdmin) {
-      await refreshAdminData();
+      if (me.isAdmin || me.isGroupAdmin) {
+        await refreshAdminData();
+      }
+    } finally {
+      setSideBetsLoading(false);
     }
   }, [refreshAdminData, search, status]);
 
@@ -368,6 +374,7 @@ export function App() {
     await supabase.auth.signOut();
     setProfile(null);
     setSideBets([]);
+    setSideBetsLoading(false);
     setSelectedSideBetId(null);
     setSelectedSideBet(null);
     setSideBetComments([]);
@@ -660,6 +667,7 @@ export function App() {
             <SideBetListView
               activeBets={activeBets}
               sideBets={sideBets}
+              loading={sideBetsLoading}
               status={status}
               search={search}
               busy={busy}
@@ -866,6 +874,7 @@ function ChatWidget({
 function SideBetListView({
   activeBets,
   sideBets,
+  loading,
   status,
   search,
   busy,
@@ -882,6 +891,7 @@ function SideBetListView({
 }: {
   activeBets: number;
   sideBets: SideBet[];
+  loading: boolean;
   status: string;
   search: string;
   busy: boolean;
@@ -899,8 +909,8 @@ function SideBetListView({
   return (
     <>
       <section className="metrics">
-        <Metric icon={<Bell size={18} />} label="Open bets" value={activeBets.toString()} />
-        <Metric icon={<Trophy size={18} />} label="Total bets" value={sideBets.length.toString()} />
+        <Metric icon={<Bell size={18} />} label="Open bets" value={loading ? "…" : activeBets.toString()} />
+        <Metric icon={<Trophy size={18} />} label="Total bets" value={loading ? "…" : sideBets.length.toString()} />
         <Metric icon={<CircleDollarSign size={18} />} label="Wallet" value={`${profile?.creditsBalance.toFixed(2) ?? "0.00"} cr`} />
         <Metric icon={<CheckCircle2 size={18} />} label="Fee" value="0%" />
       </section>
@@ -924,56 +934,62 @@ function SideBetListView({
         </aside>
 
         <div className="main-column">
-          <section className="bet-list" aria-label="Side bets">
+          <section className="bet-list" aria-label="Side bets" aria-busy={loading}>
             <div className="section-heading">
               <h2>{status === "all" ? "All Side Bets" : `${status[0].toUpperCase()}${status.slice(1)} Side Bets`}</h2>
-              <span>{sideBets.length} visible</span>
+              <span>{loading ? "Loading..." : `${sideBets.length} visible`}</span>
             </div>
-            <div className="table">
-              <div className="table-row table-head">
-                <span>Bet</span>
-                <span>Buy-in</span>
-                <span>Pot</span>
-                <span>Closes</span>
-                <span>Action</span>
+            {loading ? (
+              <div className="bet-list-loading">
+                <LoadingSpinner label="Loading side bets..." size={28} />
               </div>
-              {sideBets.map((bet) => (
-                <article className="table-row" key={bet.id}>
-                  <div>
-                    <div className="bet-title-row">
-                      <strong>{bet.title}</strong>
-                      <div className="bet-title-actions">
-                        <button className="text-button" type="button" onClick={() => onView(bet.id)}>
-                          View
-                        </button>
+            ) : (
+              <div className="table">
+                <div className="table-row table-head">
+                  <span>Bet</span>
+                  <span>Buy-in</span>
+                  <span>Pot</span>
+                  <span>Closes</span>
+                  <span>Action</span>
+                </div>
+                {sideBets.map((bet) => (
+                  <article className="table-row" key={bet.id}>
+                    <div>
+                      <div className="bet-title-row">
+                        <strong>{bet.title}</strong>
+                        <div className="bet-title-actions">
+                          <button className="text-button" type="button" onClick={() => onView(bet.id)}>
+                            View
+                          </button>
+                        </div>
                       </div>
+                      <p>{bet.description}</p>
+                      <div className="bet-meta">
+                        <span className="muted">Manager: {bet.managerName}</span>
+                        {bet.groupName ? (
+                          <span className="bet-group-pill">
+                            {bet.groupName}
+                            {bet.isPrivate ? " · private" : ""}
+                          </span>
+                        ) : null}
+                      </div>
+                      {bet.currentUserEntry ? <ChoiceLabel label={bet.currentUserEntry.optionLabel} compact /> : null}
                     </div>
-                    <p>{bet.description}</p>
-                    <div className="bet-meta">
-                      <span className="muted">Manager: {bet.managerName}</span>
-                      {bet.groupName ? (
-                        <span className="bet-group-pill">
-                          {bet.groupName}
-                          {bet.isPrivate ? " · private" : ""}
-                        </span>
-                      ) : null}
-                    </div>
-                    {bet.currentUserEntry ? <ChoiceLabel label={bet.currentUserEntry.optionLabel} compact /> : null}
-                  </div>
-                  <span>{bet.buyInCredits} cr</span>
-                  <span>{bet.potCredits.toFixed(2)} cr</span>
-                  <span>{new Date(bet.closesAt).toLocaleString()}</span>
-                  <BetActions
-                    bet={bet}
-                    busy={busy}
-                    onAction={onAction}
-                    canSettle={profile?.id === bet.managerId || Boolean(profile?.isAdmin)}
-                    onSettleRequest={onSettleRequest}
-                  />
-                </article>
-              ))}
-              {sideBets.length === 0 ? <div className="empty-state">No side bets match this view.</div> : null}
-            </div>
+                    <span>{bet.buyInCredits} cr</span>
+                    <span>{bet.potCredits.toFixed(2)} cr</span>
+                    <span>{new Date(bet.closesAt).toLocaleString()}</span>
+                    <BetActions
+                      bet={bet}
+                      busy={busy}
+                      onAction={onAction}
+                      canSettle={profile?.id === bet.managerId || Boolean(profile?.isAdmin)}
+                      onSettleRequest={onSettleRequest}
+                    />
+                  </article>
+                ))}
+                {sideBets.length === 0 ? <div className="empty-state">No side bets match this view.</div> : null}
+              </div>
+            )}
           </section>
         </div>
 
@@ -1269,6 +1285,25 @@ function Metric({ icon, label, value }: { icon: ReactNode; label: string; value:
   );
 }
 
+function LoadingSpinner({ label = "Loading...", size = 22 }: { label?: string; size?: number }) {
+  return (
+    <div className="loading-spinner" role="status" aria-live="polite" aria-busy="true">
+      <Loader2 size={size} className="loading-spinner-icon" aria-hidden="true" />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function BusyButtonLabel({ busy, idleLabel, busyLabel }: { busy: boolean; idleLabel: string; busyLabel?: string }) {
+  if (!busy) return <>{idleLabel}</>;
+  return (
+    <span className="busy-button-label">
+      <Loader2 size={15} className="loading-spinner-icon" aria-hidden="true" />
+      {busyLabel ?? idleLabel}
+    </span>
+  );
+}
+
 function CreateSideBetModal({
   form,
   creatableGroups,
@@ -1357,7 +1392,7 @@ function CreateSideBetModal({
             className="primary-button"
             disabled={busy || creatableGroups.length === 0 || !form.buyInCredits || !form.closesDate || !form.closesTime || (requiresGroupSelection && !form.groupId)}
           >
-            Create side bet
+            <BusyButtonLabel busy={busy} idleLabel="Create side bet" busyLabel="Creating..." />
           </button>
         </form>
       </div>
@@ -1402,7 +1437,11 @@ function SettleConfirmationModal({
               Cancel
             </button>
             <button className="primary-button" type="button" disabled={busy || !selectedOption} onClick={onConfirm}>
-              Settle with {selectedOption?.label ?? "selected result"}
+              <BusyButtonLabel
+                busy={busy}
+                idleLabel={`Settle with ${selectedOption?.label ?? "selected result"}`}
+                busyLabel="Settling..."
+              />
             </button>
           </div>
         </section>
@@ -1518,7 +1557,11 @@ function SideBetFocusPanel({
   }, [bet]);
 
   if (loading) {
-    return <section className="side-bet-focus empty-state">Loading side bet...</section>;
+    return (
+      <section className="side-bet-focus side-bet-loading" aria-label="Loading side bet">
+        <LoadingSpinner label="Loading side bet..." size={28} />
+      </section>
+    );
   }
 
   if (!bet) {
@@ -1528,7 +1571,12 @@ function SideBetFocusPanel({
   const winningOption = bet.options.find((option) => option.id === bet.winningOptionId);
 
   return (
-    <section className="side-bet-focus" aria-label={`${bet.title} details`}>
+    <section className={busy ? "side-bet-focus is-busy" : "side-bet-focus"} aria-label={`${bet.title} details`} aria-busy={busy}>
+      {busy ? (
+        <div className="side-bet-busy-overlay" aria-hidden="true">
+          <LoadingSpinner label="Updating..." size={24} />
+        </div>
+      ) : null}
       <div className="section-heading">
         <div>
           <h2>{bet.title}</h2>
@@ -1691,7 +1739,7 @@ function EditSideBetForm({
       </label>
       {hasEntries ? <p className="muted">Buy-in and options are locked because users have already joined.</p> : null}
       <button className="primary-button" disabled={busy}>
-        Save side bet
+        <BusyButtonLabel busy={busy} idleLabel="Save side bet" busyLabel="Saving..." />
       </button>
     </form>
   );
@@ -1762,8 +1810,12 @@ function SideBetComments({
           placeholder="Add a comment..."
         />
         <button className="primary-button" disabled={busy || !draft.trim()}>
-          <Send size={16} />
-          Comment
+          {busy ? <BusyButtonLabel busy idleLabel="Comment" busyLabel="Sending..." /> : (
+            <>
+              <Send size={16} />
+              Comment
+            </>
+          )}
         </button>
       </form>
       <div className="comment-list">
@@ -1822,7 +1874,7 @@ function RectifySettlementForm({
         </select>
       </label>
       <button className="primary-button" disabled={busy || !correctedOptionId || correctedOptionId === bet.winningOptionId}>
-        Rectify settlement
+        <BusyButtonLabel busy={busy} idleLabel="Rectify settlement" busyLabel="Rectifying..." />
       </button>
     </form>
   );
@@ -1868,7 +1920,7 @@ function BetActions({
               ))}
             </select>
             <button className="text-button" disabled={busy || !optionId} onClick={() => onSettleRequest({ bet, optionId })}>
-              Settle
+              <BusyButtonLabel busy={busy} idleLabel="Settle" />
             </button>
           </>
         ) : null}
@@ -1878,7 +1930,7 @@ function BetActions({
 
   return (
     <div className="row-actions">
-      <select value={optionId} onChange={(event) => setOptionId(event.target.value)}>
+      <select value={optionId} onChange={(event) => setOptionId(event.target.value)} disabled={busy}>
         {bet.options.map((option) => (
           <option value={option.id} key={option.id}>
             {option.label}
@@ -1894,11 +1946,11 @@ function BetActions({
           )
         }
       >
-        {bet.currentUserEntry ? "Change" : "Join"}
+        <BusyButtonLabel busy={busy} idleLabel={bet.currentUserEntry ? "Change" : "Join"} />
       </button>
       {canSettle ? (
         <button className="text-button" disabled={busy || !optionId} onClick={() => onSettleRequest({ bet, optionId })}>
-          Settle
+          <BusyButtonLabel busy={busy} idleLabel="Settle" />
         </button>
       ) : null}
     </div>
