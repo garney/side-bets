@@ -298,10 +298,16 @@ The workflow uses an app-local npm cache at:
 /var/www/side-bets/.npm-cache
 ```
 
+It also uses an app-local PM2 home at:
+
+```text
+/var/www/side-bets/.pm2
+```
+
 If a previous manual command created root-owned npm cache files for the deploy user, fix the home cache once:
 
 ```bash
-sudo chown -R deploy:deploy /home/deploy/.npm
+sudo chown -R deploy:deploy /home/deploy/.npm /home/deploy/.pm2
 ```
 
 Also make sure the app directory is owned by the deploy user:
