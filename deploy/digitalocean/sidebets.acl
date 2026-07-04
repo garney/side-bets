@@ -6,3 +6,7 @@ topic read sidebets/#
 # Use this account from the Side Bets app/server when publishing notifications.
 user sidebets_app
 topic readwrite sidebets/#
+
+# Optional publisher for Astro/Mission Control integrations.
+user astro_app
+topic readwrite sidebets/#

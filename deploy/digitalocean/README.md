@@ -120,6 +120,7 @@ Create MQTT users:
 ```bash
 sudo mosquitto_passwd -c /etc/mosquitto/passwd sidebets_awtrix
 sudo mosquitto_passwd /etc/mosquitto/passwd sidebets_app
+sudo mosquitto_passwd /etc/mosquitto/passwd astro_app
 ```
 
 Secure files and restart:
@@ -127,6 +128,13 @@ Secure files and restart:
 ```bash
 sudo chown root:mosquitto /etc/mosquitto/passwd /etc/mosquitto/acl
 sudo chmod 640 /etc/mosquitto/passwd /etc/mosquitto/acl
+sudo /usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf -v
+```
+
+If the foreground config test starts cleanly, press `Ctrl+C`, then restart the service:
+
+```bash
+sudo systemctl reset-failed mosquitto
 sudo systemctl restart mosquitto
 sudo systemctl enable mosquitto
 sudo systemctl status mosquitto
@@ -232,6 +240,14 @@ The workflow:
 8. switches `/var/www/side-bets/current` to the new release
 9. restarts the app with PM2
 
+When run manually, the workflow also has a `sync_infra_config` option. Turn that on only when you want GitHub to copy the repo's DigitalOcean config samples into `/etc` on the droplet:
+
+- `deploy/digitalocean/mosquitto-sidebets.conf` -> `/etc/mosquitto/conf.d/sidebets.conf`
+- `deploy/digitalocean/sidebets.acl` -> `/etc/mosquitto/acl`
+- `deploy/digitalocean/nginx-sidebets.conf` -> `/etc/nginx/sites-available/side-bets`
+
+That option requires the deploy user to have passwordless `sudo` for the relevant service/config commands. Leave it off for ordinary app deployments.
+
 ### Required GitHub Secrets
 
 In GitHub, go to:
@@ -275,6 +291,18 @@ sudo chown -R deploy:deploy /var/www/side-bets
 It also assumes Node.js and PM2 are already installed.
 
 You do not need to keep a Git checkout on the server for pipeline deployments. GitHub ships a built release bundle directly to the droplet.
+
+If you want GitHub Actions to sync Mosquitto and Nginx config, configure passwordless sudo for the deploy user. A narrowly scoped sudoers file is better than full passwordless sudo:
+
+```bash
+sudo visudo -f /etc/sudoers.d/side-bets-deploy
+```
+
+Example:
+
+```text
+deploy ALL=(root) NOPASSWD: /usr/bin/install, /usr/bin/systemctl restart mosquitto, /usr/bin/systemctl is-active --quiet mosquitto, /usr/sbin/nginx -t, /usr/bin/systemctl reload nginx, /usr/bin/ln -s /etc/nginx/sites-available/side-bets /etc/nginx/sites-enabled/side-bets
+```
 
 ## 6. Configure Nginx
 
