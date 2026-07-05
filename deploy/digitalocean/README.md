@@ -108,6 +108,12 @@ mosquitto -h
 
 ## 4. Configure Mosquitto
 
+For detailed Mosquitto operations, channel permissions, ACL updates, and test commands, see:
+
+```text
+deploy/digitalocean/MOSQUITTO.md
+```
+
 Copy the sample files from this repo:
 
 ```bash
@@ -240,13 +246,22 @@ The workflow:
 8. switches `/var/www/side-bets/current` to the new release
 9. restarts the app with PM2
 
-When run manually, the workflow also has a `sync_infra_config` option. Turn that on only when you want GitHub to copy the repo's DigitalOcean config samples into `/etc` on the droplet:
+When run manually, the workflow has optional server-config sync switches.
+
+Use `sync_mosquitto_config` when you want GitHub to copy the repo's Mosquitto config samples into `/etc` on the droplet:
 
 - `deploy/digitalocean/mosquitto-sidebets.conf` -> `/etc/mosquitto/conf.d/sidebets.conf`
 - `deploy/digitalocean/sidebets.acl` -> `/etc/mosquitto/acl`
+
+Use `sync_nginx_config` only when you intentionally want to replace the Nginx site config with the repo's plain HTTP sample:
+
 - `deploy/digitalocean/nginx-sidebets.conf` -> `/etc/nginx/sites-available/side-bets`
 
-That option requires the deploy user to have passwordless `sudo` for the relevant service/config commands. Leave it off for ordinary app deployments.
+Leave both options off for ordinary app deployments.
+
+Important: after Certbot has installed SSL, avoid `sync_nginx_config` unless you plan to re-run Certbot afterwards. The live Nginx file may include SSL directives that are not present in the plain repo sample.
+
+These options require the deploy user to have passwordless `sudo` for the relevant service/config commands.
 
 ### Required GitHub Secrets
 

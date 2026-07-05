@@ -6,8 +6,13 @@ on:
       - main
   workflow_dispatch:
     inputs:
-      sync_infra_config:
-        description: "Copy Mosquitto and Nginx config samples into /etc on the droplet"
+      sync_mosquitto_config:
+        description: "Copy Mosquitto config and ACL samples into /etc on the droplet"
+        required: false
+        default: false
+        type: boolean
+      sync_nginx_config:
+        description: "Copy the plain HTTP Nginx sample into /etc on the droplet"
         required: false
         default: false
         type: boolean
@@ -145,8 +150,8 @@ jobs:
           ls -1dt "$APP_DIR"/releases/* | tail -n +4 | xargs -r rm -rf
           REMOTE
 
-      - name: Sync DigitalOcean system config
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sync_infra_config }}
+      - name: Sync Mosquitto config
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sync_mosquitto_config }}
         run: |
           ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
             "APP_DIR='$APP_DIR' bash -s" <<'REMOTE'
@@ -158,6 +163,16 @@ jobs:
           sudo install -o root -g mosquitto -m 640 deploy/digitalocean/sidebets.acl /etc/mosquitto/acl
           sudo systemctl restart mosquitto
           sudo systemctl is-active --quiet mosquitto
+          REMOTE
+
+      - name: Sync Nginx config
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.sync_nginx_config }}
+        run: |
+          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "APP_DIR='$APP_DIR' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          cd "$APP_DIR/current"
 
           sudo install -m 644 deploy/digitalocean/nginx-sidebets.conf /etc/nginx/sites-available/side-bets
           if [ ! -e /etc/nginx/sites-enabled/side-bets ]; then
