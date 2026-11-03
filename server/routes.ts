@@ -27,7 +27,7 @@ const createBetSchema = z.object({
   houseFeePercent: z.number().min(0).max(100).default(0),
   startsAt: z.string().datetime(),
   closesAt: z.string().datetime(),
-  options: z.array(z.string().min(1).max(80)).min(2).max(12),
+  options: z.array(z.string().min(1).max(80)).min(2).max(50),
   groupId: z.string().uuid().optional()
 });
 
@@ -37,7 +37,7 @@ const updateBetSchema = z.object({
   sourceUrl: z.string().url().nullable().optional(),
   buyInCredits: z.number().positive().max(100000),
   closesAt: z.string().datetime(),
-  options: z.array(z.string().min(1).max(80)).min(2).max(12)
+  options: z.array(z.string().min(1).max(80)).min(2).max(50)
 });
 
 const joinBetSchema = z.object({
