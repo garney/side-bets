@@ -53,7 +53,7 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 
-app.use("/api", createApiRouter(realtime, tableManager));
+app.use("/api", createApiRouter(realtime));
 
 if (config.nodeEnv === "production") {
   const clientDist = path.resolve(process.cwd(), "client/dist");

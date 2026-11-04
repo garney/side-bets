@@ -74,7 +74,7 @@ export function BlackjackTableView({
   const dealerTotalLabel = reveal.dealerDisplayTotal(holeHidden, flipHole);
 
   const seatSlots = useMemo(() => {
-    const slots = Array.from({ length: table.maxSeats }, (_, i) => null as (typeof table.seats)[0] | null);
+    const slots = Array.from({ length: table.maxSeats }, () => null as (typeof table.seats)[0] | null);
     for (const seat of table.seats) slots[seat.seatIndex] = seat;
     return slots;
   }, [table.seats, table.maxSeats]);

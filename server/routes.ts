@@ -118,7 +118,7 @@ type RealtimeNotifier = {
   blackjackLobby?: (groupId: string) => void;
 };
 
-export function createApiRouter(realtime: RealtimeNotifier, _tableManager?: import("./blackjack/tableManager.js").BlackjackTableManager) {
+export function createApiRouter(realtime: RealtimeNotifier) {
   const router = Router();
 
   router.get("/health", (_req, res) => {

@@ -1,6 +1,5 @@
 import type { Server } from "socket.io";
 import { supabaseAdmin } from "../supabase.js";
-import { config } from "../config.js";
 import type { BlackjackTableManager } from "./tableManager.js";
 
 export function registerBlackjackSockets(io: Server, tables: BlackjackTableManager) {

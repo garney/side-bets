@@ -19,7 +19,12 @@ export default [
         fetch: "readonly",
         process: "readonly",
         RequestInit: "readonly",
-        window: "readonly"
+        window: "readonly",
+        Image: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
+        setInterval: "readonly",
+        clearInterval: "readonly"
       },
       parserOptions: {
         ecmaVersion: "latest",
