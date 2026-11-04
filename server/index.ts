@@ -3,29 +3,30 @@ import http from "node:http";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
+import type { Server } from "socket.io";
+import { BlackjackTableManager } from "./blackjack/tableManager.js";
 import { createApiRouter } from "./routes.js";
 import { assertServerConfig, config } from "./config.js";
 import { createSocketServer } from "./socket.js";
 import type { ChatMessage } from "../shared/types.js";
+import type { WalletChangeDetail } from "./credits.js";
 
 assertServerConfig();
 
 const app = express();
 const server = http.createServer(app);
-const io = createSocketServer(server);
 
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "1mb" }));
+let io!: Server;
+let tableManager!: BlackjackTableManager;
 
 const realtime = {
   async sideBetChanged(betId: string, reason: string) {
     io.to("side-bets").to(`side-bet:${betId}`).emit("side-bet:changed", { betId, reason });
   },
-  async walletChanged(userIds: string | string[], reason: string) {
+  async walletChanged(userIds: string | string[], reason: string, detail?: WalletChangeDetail) {
     const ids = Array.isArray(userIds) ? userIds : [userIds];
     for (const userId of [...new Set(ids)]) {
-      io.to(`user:${userId}`).emit("wallet:changed", { reason });
+      io.to(`user:${userId}`).emit("wallet:changed", detail ? { reason, ...detail } : { reason });
     }
   },
   async adminChanged(reason: string) {
@@ -38,10 +39,21 @@ const realtime = {
     }
 
     io.to("chat:general").emit("chat:message", message);
+  },
+  blackjackLobby(groupId: string) {
+    io.to(`blackjack:lobby:${groupId}`).emit("blackjack:lobby", tableManager.listLobby(groupId));
   }
 };
 
-app.use("/api", createApiRouter(realtime));
+tableManager = new BlackjackTableManager(realtime);
+io = createSocketServer(server, tableManager);
+tableManager.attachIo(io);
+
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json({ limit: "1mb" }));
+
+app.use("/api", createApiRouter(realtime, tableManager));
 
 if (config.nodeEnv === "production") {
   const clientDist = path.resolve(process.cwd(), "client/dist");
@@ -50,7 +62,11 @@ if (config.nodeEnv === "production") {
 } else {
   const { createServer } = await import("vite");
   const vite = await createServer({
-    server: { middlewareMode: true },
+    configFile: path.resolve(process.cwd(), "vite.config.ts"),
+    server: {
+      middlewareMode: true,
+      hmr: { server }
+    },
     appType: "spa",
     root: path.resolve(process.cwd(), "client")
   });

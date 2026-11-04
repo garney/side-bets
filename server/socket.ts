@@ -2,8 +2,10 @@ import type { Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
 import { config } from "./config.js";
 import { supabaseAdmin, supabaseAuth } from "./supabase.js";
+import type { BlackjackTableManager } from "./blackjack/tableManager.js";
+import { enrichSocketUser, registerBlackjackSockets } from "./blackjack/sockets.js";
 
-export function createSocketServer(httpServer: HttpServer) {
+export function createSocketServer(httpServer: HttpServer, tableManager: BlackjackTableManager) {
   const io = new Server(httpServer, {
     cors: {
       origin: true,
@@ -28,6 +30,7 @@ export function createSocketServer(httpServer: HttpServer) {
 
     socket.data.userId = data.user.id;
     socket.data.isAdmin = Boolean(adminRow) || config.adminUserIds.has(data.user.id);
+    await enrichSocketUser(socket, data.user.id);
     next();
   });
 
@@ -63,6 +66,8 @@ export function createSocketServer(httpServer: HttpServer) {
 
     socket.emit("connected", { userId: socket.data.userId, isAdmin: socket.data.isAdmin });
   });
+
+  registerBlackjackSockets(io, tableManager);
 
   return io;
 }

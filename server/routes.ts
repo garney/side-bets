@@ -108,12 +108,17 @@ const STATION_ALPHA_GROUP_NAME = "Station Alpha";
 
 type RealtimeNotifier = {
   sideBetChanged: (betId: string, reason: string) => Promise<void>;
-  walletChanged: (userIds: string | string[], reason: string) => Promise<void>;
+  walletChanged: (
+    userIds: string | string[],
+    reason: string,
+    detail?: import("./credits.js").WalletChangeDetail
+  ) => Promise<void>;
   adminChanged: (reason: string) => Promise<void>;
   chatMessage: (message: ChatMessage) => Promise<void>;
+  blackjackLobby?: (groupId: string) => void;
 };
 
-export function createApiRouter(realtime: RealtimeNotifier) {
+export function createApiRouter(realtime: RealtimeNotifier, _tableManager?: import("./blackjack/tableManager.js").BlackjackTableManager) {
   const router = Router();
 
   router.get("/health", (_req, res) => {
@@ -749,17 +754,37 @@ export function createApiRouter(realtime: RealtimeNotifier) {
       .from("profiles")
       .update({ credits_balance: Number(profile.credits_balance) - buyIn })
       .eq("id", user.id);
-    await supabaseAdmin.from("credit_transactions").insert({
-      user_id: user.id,
-      amount_credits: -buyIn,
-      kind: "buy_in",
-      description: `Buy-in for ${bet.title}`,
-      side_bet_id: bet.id,
-      created_by: user.id
-    });
+    const { data: txRow, error: txError } = await supabaseAdmin
+      .from("credit_transactions")
+      .insert({
+        user_id: user.id,
+        amount_credits: -buyIn,
+        kind: "buy_in",
+        description: `Buy-in for ${bet.title}`,
+        side_bet_id: bet.id,
+        created_by: user.id
+      })
+      .select("id, amount_credits, kind, description, side_bet_id, created_at")
+      .single();
 
+    if (txError || !txRow) {
+      res.status(500).json({ error: txError?.message ?? "Failed to record transaction" });
+      return;
+    }
+
+    const nextBalance = Number(profile.credits_balance) - buyIn;
     await realtime.sideBetChanged(bet.id, "joined");
-    await realtime.walletChanged(user.id, "buy-in");
+    await realtime.walletChanged(user.id, "buy-in", {
+      creditsBalance: nextBalance,
+      transaction: {
+        id: txRow.id,
+        amountCredits: Number(txRow.amount_credits),
+        kind: txRow.kind as "buy_in",
+        description: txRow.description,
+        sideBetId: txRow.side_bet_id,
+        createdAt: txRow.created_at
+      }
+    });
     await realtime.adminChanged("transactions");
     res.status(201).json({ ok: true });
   });

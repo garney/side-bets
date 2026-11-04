@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Bell, CheckCircle2, CircleDollarSign, Loader2, LogOut, MessageCircle, Plus, Search, Send, ShieldCheck, Trophy, UserCircle2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense, type FormEvent, type ReactNode } from "react";
+import { Bell, CheckCircle2, CircleDollarSign, Loader2, LogOut, MessageCircle, Plus, Search, Send, ShieldCheck, Spade, Trophy, UserCircle2, X } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
 import type {
   AdminSummary,
@@ -16,6 +16,20 @@ import type {
 } from "../../shared/types";
 import { api } from "./api";
 import { supabase } from "./supabase";
+
+const BlackjackPage = lazy(() => import("./blackjack/BlackjackPage").then((module) => ({ default: module.BlackjackPage })));
+
+function isBlackjackPath() {
+  return window.location.pathname.startsWith("/blackjack");
+}
+
+function pushBlackjackPath() {
+  window.history.pushState({}, "", "/blackjack");
+}
+
+function pushHomePath() {
+  window.history.pushState({}, "", "/");
+}
 
 type SessionState = "loading" | "signed-out" | "signed-in";
 type AppView = "side-bets" | "groups" | "admin";
@@ -91,9 +105,13 @@ export function App() {
   const [sideBetCommentDraft, setSideBetCommentDraft] = useState("");
   const [sideBetCommentBusy, setSideBetCommentBusy] = useState(false);
   const [view, setView] = useState<AppView>("side-bets");
+  const [onBlackjack, setOnBlackjack] = useState(isBlackjackPath);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const chatOpenRef = useRef(false);
+  const socketRef = useRef<Socket | null>(null);
+  const activeSideBetIdRef = useRef<string | null>(null);
+  const isPlatformAdminRef = useRef(false);
 
   const activeBets = useMemo(() => sideBets.filter((bet) => bet.status === "open").length, [sideBets]);
   const creatableGroups = useMemo(() => {
@@ -102,6 +120,8 @@ export function App() {
     return groups.filter((group) => group.membershipStatus === "approved");
   }, [groups, profile]);
   const activeSideBetId = routeSideBetId ?? selectedSideBetId;
+  activeSideBetIdRef.current = activeSideBetId;
+  isPlatformAdminRef.current = Boolean(profile?.isAdmin);
 
   const refreshSideBetList = useCallback(async () => {
     setSideBets(await api.sideBets(search, status));
@@ -186,6 +206,7 @@ export function App() {
     function syncRoute() {
       const nextSideBetId = getSideBetIdFromPath();
       setRouteSideBetId(nextSideBetId);
+      setOnBlackjack(isBlackjackPath());
       if (nextSideBetId) {
         setSelectedSideBetId(null);
       }
@@ -201,7 +222,26 @@ export function App() {
   useEffect(() => {
     if (sessionState !== "signed-in") return;
     refreshData().catch((error) => setMessage(error.message));
-  }, [sessionState, refreshData]);
+  }, [sessionState]);
+
+  const skipDebouncedListRef = useRef(true);
+  useEffect(() => {
+    if (sessionState === "signed-out") {
+      skipDebouncedListRef.current = true;
+    }
+  }, [sessionState]);
+
+  useEffect(() => {
+    if (sessionState !== "signed-in") return;
+    if (skipDebouncedListRef.current) {
+      skipDebouncedListRef.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      refreshSideBetList().catch((error) => setMessage(error.message));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search, status, sessionState, refreshSideBetList]);
 
   useEffect(() => {
     const selectedGroup = groups.find((group) => group.id === selectedGroupId);
@@ -216,7 +256,7 @@ export function App() {
   useEffect(() => {
     if (view !== "groups" || !profile || groups.length === 0) return;
     setSelectedGroupId((current) => pickDefaultGroupId(groups, profile, current));
-  }, [groups, profile, view]);
+  }, [groups, profile?.id, profile?.isAdmin, view]);
 
   useEffect(() => {
     if (sessionState !== "signed-in") return;
@@ -305,38 +345,56 @@ export function App() {
   }, [activeSideBetId, sessionState]);
 
   useEffect(() => {
-    let socket: Socket | null = null;
+    if (sessionState !== "signed-in") {
+      socketRef.current?.disconnect();
+      socketRef.current = null;
+      return;
+    }
+
+    let cancelled = false;
 
     async function connectSocket() {
       const { data } = await supabase.auth.getSession();
-      if (!data.session?.access_token) return;
+      if (!data.session?.access_token || cancelled) return;
 
-      socket = io("/", { auth: { token: data.session.access_token } });
-      if (activeSideBetId) {
-        socket.emit("side-bet:watch", { betId: activeSideBetId });
-        socket.emit("chat:watch", { sideBetId: activeSideBetId });
-      }
+      socketRef.current?.disconnect();
+      const socket = io(window.location.origin, {
+        path: "/socket.io",
+        auth: { token: data.session.access_token }
+      });
+      socketRef.current = socket;
 
-      socket.on("side-bet:changed", (payload: { betId?: string }) => {
-        refreshSideBetList().catch((error) => setMessage(error.message));
-        if (payload.betId && payload.betId === activeSideBetId) {
+      socket.on("side-bet:changed", (payload: { betId?: string; reason?: string }) => {
+        const reason = payload.reason ?? "";
+        if (reason === "settled" || reason === "created" || reason === "cancelled" || reason === "rectified" || reason === "joined") {
+          refreshSideBetList().catch((error) => setMessage(error.message));
+        }
+        const activeId = activeSideBetIdRef.current;
+        if (payload.betId && payload.betId === activeId) {
           refreshSelectedSideBet().catch((error) => setMessage(error.message));
         }
       });
 
-      socket.on("wallet:changed", () => {
+      socket.on("wallet:changed", (payload: { creditsBalance?: number; transaction?: CreditTransaction }) => {
+        if (typeof payload.creditsBalance === "number") {
+          setProfile((current) => (current ? { ...current, creditsBalance: payload.creditsBalance! } : current));
+          if (payload.transaction) {
+            setTransactions((current) => [payload.transaction!, ...current.filter((row) => row.id !== payload.transaction!.id)].slice(0, 50));
+          }
+          return;
+        }
         refreshWalletData().catch((error) => setMessage(error.message));
       });
 
       socket.on("admin:changed", () => {
-        if (profile?.isAdmin) {
+        if (isPlatformAdminRef.current) {
           refreshAdminData().catch((error) => setMessage(error.message));
         }
       });
       socket.on("chat:message", (message: ChatMessage) => {
         if (message.room === "side_bet") {
           setSideBetComments((current) => {
-            if (message.sideBetId !== activeSideBetId || current.some((candidate) => candidate.id === message.id)) return current;
+            if (message.sideBetId !== activeSideBetIdRef.current || current.some((candidate) => candidate.id === message.id)) return current;
             return [message, ...current].slice(0, 50);
           });
           return;
@@ -350,18 +408,31 @@ export function App() {
       });
     }
 
-    if (sessionState === "signed-in") {
-      connectSocket();
+    void connectSocket();
+
+    return () => {
+      cancelled = true;
+      socketRef.current?.disconnect();
+      socketRef.current = null;
+    };
+  }, [refreshAdminData, refreshSelectedSideBet, refreshSideBetList, refreshWalletData, sessionState]);
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (sessionState !== "signed-in" || !socket) return;
+
+    if (activeSideBetId) {
+      socket.emit("side-bet:watch", { betId: activeSideBetId });
+      socket.emit("chat:watch", { sideBetId: activeSideBetId });
     }
 
     return () => {
-      if (socket && activeSideBetId) {
+      if (activeSideBetId) {
         socket.emit("side-bet:unwatch", { betId: activeSideBetId });
         socket.emit("chat:unwatch", { sideBetId: activeSideBetId });
       }
-      socket?.disconnect();
     };
-  }, [profile?.isAdmin, refreshAdminData, refreshSelectedSideBet, refreshSideBetList, refreshWalletData, activeSideBetId, sessionState]);
+  }, [activeSideBetId, sessionState]);
 
   async function signIn() {
     await supabase.auth.signInWithOAuth({
@@ -579,6 +650,19 @@ export function App() {
     );
   }
 
+  if (sessionState === "signed-in" && onBlackjack) {
+    return (
+      <Suspense fallback={<main className="center-screen">Loading blackjack…</main>}>
+        <BlackjackPage
+          onExit={() => {
+            pushHomePath();
+            setOnBlackjack(false);
+          }}
+        />
+      </Suspense>
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -589,6 +673,18 @@ export function App() {
           {/* <span className="muted">Single-port app: web, API, and sockets together.</span> */}
         </div>
         <div className="topbar-actions">
+          <button
+            type="button"
+            className="icon-button blackjack-entry"
+            title="Blackjack tables"
+            aria-label="Open blackjack"
+            onClick={() => {
+              pushBlackjackPath();
+              setOnBlackjack(true);
+            }}
+          >
+            <Spade size={18} />
+          </button>
           <div className="view-switch" aria-label="View switcher">
             <button
               className={view === "side-bets" ? "active" : ""}
