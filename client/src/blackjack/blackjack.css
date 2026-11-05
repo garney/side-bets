@@ -7,11 +7,15 @@
 }
 
 .bj-chrome {
+  position: sticky;
+  top: 0;
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 14px 18px;
+  background: #0d3b28;
 }
 
 .bj-brand {
@@ -62,10 +66,24 @@
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: 8px 16px 20px;
+  padding: 8px 16px 220px;
   background:
     radial-gradient(ellipse at center, rgba(255, 255, 255, 0.05), transparent 55%),
     #14643d;
+}
+
+.table-cta {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 28px 16px calc(14px + env(safe-area-inset-bottom));
+  background: linear-gradient(to top, rgba(8, 32, 22, 0.96) 70%, rgba(8, 32, 22, 0));
 }
 
 .felt-status,
@@ -481,15 +499,76 @@ button:disabled {
   width: min(420px, 100%);
 }
 
+.open-seats-note {
+  display: none;
+  margin: 8px 0 0;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 13px;
+}
+
 @media (max-width: 720px) {
+  .felt-stage {
+    justify-content: flex-start;
+    gap: 16px;
+  }
+
+  .seat-rail {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .seat.mine {
+    order: -1;
+    grid-column: 1 / -1;
+  }
+
+  .seat.open {
+    display: flex;
+    min-height: 0;
+    padding: 8px;
+    font-size: 12px;
+  }
+
+  .open-seats-note {
+    display: none;
+  }
+
+  .seat:not(.mine) {
+    min-height: 0;
+    padding: 8px;
+  }
+
+  .seat:not(.mine) .card-row.compact {
+    height: 52px;
+    min-height: 52px;
+  }
+
+  .seat:not(.mine) .playing-card {
+    width: 34px;
+    height: 48px;
+    margin-left: -22px;
+  }
+
+  .seat:not(.mine) .playing-card:first-child {
+    margin-left: 0;
+  }
+
+  .seat:not(.mine) .playing-card .pip,
+  .seat:not(.mine) .playing-card .corner.suit,
+  .seat:not(.mine) .playing-card .corner.bottom {
+    display: none;
+  }
+
+  .seat:not(.mine) .corner.top {
+    font-size: 11px;
+    top: 3px;
+    left: 3px;
+  }
+
   .choice-grid,
   .open-table {
     grid-template-columns: 1fr;
     display: grid;
-  }
-
-  .seat-rail {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .action-dock {

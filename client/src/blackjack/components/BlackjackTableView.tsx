@@ -192,7 +192,11 @@ export function BlackjackTableView({
           );
         })}
       </div>
+      <p className="open-seats-note">
+        {seatSlots.filter((seat) => !seat).length} open {seatSlots.filter((seat) => !seat).length === 1 ? "seat" : "seats"}
+      </p>
 
+      <div className="table-cta">
       {resultCopy && table.phase === "betting" ? (
         <p className={`round-result ${myResult?.net && myResult.net > 0 ? "win" : myResult?.net === 0 ? "push" : "lose"}`} role="status">
           {resultCopy} Place your next bet.
@@ -306,6 +310,7 @@ export function BlackjackTableView({
           </button>
         </div>
       ) : null}
+      </div>
     </section>
   );
 }
