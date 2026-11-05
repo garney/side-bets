@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Profile, PublicTable } from "../../../../shared/types";
 import { PlayingCard } from "./PlayingCard";
 import { cardKey } from "../cardUtils";
@@ -51,15 +51,8 @@ export function BlackjackTableView({
   const myResult = table.lastRoundResults?.find((r) => r.userId === profile.id);
   const holeHidden = table.dealerHand.some((c) => c.suit === "hidden");
 
-  const dealRoundRef = useRef(0);
   const [flipHole, setFlipHole] = useState(false);
   const reveal = useCardReveal(table);
-
-  useEffect(() => {
-    if (table.phase === "playing" || table.phase === "dealer") {
-      dealRoundRef.current = table.round;
-    }
-  }, [table.phase, table.round]);
 
   useEffect(() => {
     if (!holeHidden && table.dealerHand.length >= 2) {
@@ -68,8 +61,6 @@ export function BlackjackTableView({
     }
     setFlipHole(false);
   }, [holeHidden, table.dealerHand.length, table.round]);
-
-  const dealBase = useMemo(() => dealRoundRef.current * 1000, [table.round, table.phase]);
 
   const dealerTotalLabel = reveal.dealerDisplayTotal(holeHidden, flipHole);
 
@@ -139,7 +130,7 @@ export function BlackjackTableView({
                     suit={facedown ? "hidden" : card.suit}
                     rank={facedown ? 0 : card.rank}
                     faceDown={facedown}
-                    dealDelayMs={dealBase + i * 120}
+                    dealDelayMs={i * 120}
                   />
                 );
               })
@@ -170,7 +161,7 @@ export function BlackjackTableView({
                           key={cardKey(card, i, seat.userId)}
                           suit={card.suit}
                           rank={card.rank}
-                          dealDelayMs={dealBase + 220 + seat.seatIndex * 60 + i * 140}
+                          dealDelayMs={220 + seat.seatIndex * 60 + i * 140}
                         />
                       ))
                     )}
