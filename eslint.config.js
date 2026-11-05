@@ -20,6 +20,7 @@ export default [
         process: "readonly",
         RequestInit: "readonly",
         window: "readonly",
+        localStorage: "readonly",
         Image: "readonly",
         setTimeout: "readonly",
         clearTimeout: "readonly",

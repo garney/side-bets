@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Profile, PublicTable } from "../../../../shared/types";
 import { PlayingCard } from "./PlayingCard";
 import { cardKey } from "../cardUtils";
+import { betError } from "../session";
 import { useCardReveal } from "./useCardReveal";
+
+const CHIP_VALUES = [1, 5, 20, 50, 100];
 
 type Props = {
   table: PublicTable;
@@ -14,19 +17,34 @@ type Props = {
   onBet: () => void;
   onHit: () => void;
   onStand: () => void;
-  onLeave: () => void;
-  onLeaveHost: () => void;
-  onStartBetting: () => void;
   onDeal: () => void;
+  onStartBetting: () => void;
   onEndTable: () => void;
 };
 
-function outcomeLabel(outcome: string, net: number) {
-  if (outcome === "blackjack") return `Blackjack! +${net}`;
-  if (outcome === "win") return `You win +${net}`;
-  if (outcome === "push") return "Push — bet returned";
-  if (outcome === "bust") return `Bust — lost ${Math.abs(net)}`;
-  return `You lose — lost ${Math.abs(net)}`;
+function secondsLeft(deadline: number | null, now: number) {
+  if (deadline == null) return null;
+  return Math.max(0, Math.ceil((deadline - now) / 1000));
+}
+
+function useNow(active: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, [active]);
+  return now;
+}
+
+function seatStatus(seat: PublicTable["seats"][number], active: boolean) {
+  if (active) return "Your turn";
+  if (seat.status === "stood") return "standing";
+  if (seat.status === "bust") return "bust";
+  if (seat.status === "blackjack") return "blackjack";
+  if (seat.status === "acting") return "playing";
+  if (seat.bet > 0) return "bet in";
+  return "seated";
 }
 
 export function BlackjackTableView({
@@ -39,18 +57,13 @@ export function BlackjackTableView({
   onBet,
   onHit,
   onStand,
-  onLeave,
-  onLeaveHost,
-  onStartBetting,
   onDeal,
+  onStartBetting,
   onEndTable
 }: Props) {
   const mySeat = table.seats.find((s) => s.userId === profile.id);
   const isHost = table.dealerUserId === profile.id;
-  const isLiveAuto = table.mode === "live";
-  const myResult = table.lastRoundResults?.find((r) => r.userId === profile.id);
   const holeHidden = table.dealerHand.some((c) => c.suit === "hidden");
-
   const [flipHole, setFlipHole] = useState(false);
   const reveal = useCardReveal(table);
 
@@ -62,7 +75,33 @@ export function BlackjackTableView({
     setFlipHole(false);
   }, [holeHidden, table.dealerHand.length, table.round]);
 
+  const waiting =
+    table.dealStartsAt != null || table.turnEndsAt != null || table.seats.some((seat) => seat.idleEndsAt != null);
+  const now = useNow(waiting);
+  const dealIn = secondsLeft(table.dealStartsAt, now);
+  const turnIn = secondsLeft(table.turnEndsAt, now);
+  const myIdleIn = secondsLeft(mySeat?.idleEndsAt ?? null, now);
   const dealerTotalLabel = reveal.dealerDisplayTotal(holeHidden, flipHole);
+  const myTurn = Boolean(mySeat && mySeat.status === "acting" && table.activeSeatIndex === mySeat.seatIndex);
+  const myResult = table.lastRoundResults?.find((result) => result.userId === profile.id);
+  const resultCopy =
+    myResult?.outcome === "blackjack"
+      ? `Blackjack. You won ${myResult.net}.`
+      : myResult?.outcome === "win"
+        ? `You won ${myResult.net}.`
+        : myResult?.outcome === "push"
+          ? "Push. Your bet is back."
+          : myResult?.outcome === "bust"
+            ? `Bust. You lost ${Math.abs(myResult.net)}.`
+            : myResult?.outcome === "lose"
+              ? `You lost ${Math.abs(myResult.net)}.`
+              : null;
+  const canBet = Boolean(!isHost && mySeat && table.phase === "betting" && mySeat.bet <= 0);
+  const amount = Number(betAmount);
+  const invalidBet = betError(amount, table.minBet, table.maxBet);
+  const chips = CHIP_VALUES.filter((value) => value >= table.minBet && value <= table.maxBet);
+  const spotRef = useRef<HTMLSpanElement | null>(null);
+  const [flyer, setFlyer] = useState<{ amount: number; left: number; top: number; dx: number; dy: number; go: boolean } | null>(null);
 
   const seatSlots = useMemo(() => {
     const slots = Array.from({ length: table.maxSeats }, () => null as (typeof table.seats)[0] | null);
@@ -70,59 +109,33 @@ export function BlackjackTableView({
     return slots;
   }, [table.seats, table.maxSeats]);
 
+  const phaseLabel =
+    table.phase === "playing" ? "Live" : table.phase === "dealer" ? "Dealer turn" : table.phase === "betting" ? "Betting" : table.phase;
+
   return (
-    <div className="bj-table-wrap">
-      <div className="bj-table-header">
-        <div>
-          {isHost && table.mode === "live" ? (
-            <p className="dealer-view-hint">
-              Dealer view — watch hands and bankroll here. You are not seated; use Deal now / Close table below.
-              {table.dealerAway ? " (Table marked host away — still runs on your bankroll.)" : null}
-            </p>
-          ) : null}
-          <span className="phase-pill">{table.phase}</span>
-          <span className="muted">Round {table.round}</span>
-        </div>
-        {table.mode === "practice" && mySeat ? (
-          <div className="chip-balance">
-            <span className="chip-dot" aria-hidden />
-            <strong>{mySeat.practiceChips ?? 0}</strong>
-            <span className="muted">practice chips</span>
-          </div>
+    <section className="felt-stage" aria-label={`${table.title} blackjack table`}>
+      <div className="felt-status">
+        <span className="live-dot" aria-hidden />
+        <span>
+          {phaseLabel} · Round {table.round}
+          {table.mode === "live" && table.dealerBankroll != null ? ` · bankroll ${table.dealerBankroll}` : ""}
+        </span>
+        {dealIn != null ? <span>Dealing in {dealIn}s</span> : null}
+        {turnIn != null ? (
+          <span className={turnIn <= 10 ? "action-timer urgent" : "action-timer"} role="timer">
+            {turnIn}s
+          </span>
         ) : null}
-        {table.mode === "live" ? (
-          <div className="chip-balance live">
-            Bankroll <strong>{table.dealerBankroll ?? 0}</strong>
-            {table.dealerAway ? <span className="muted"> · host away</span> : null}
-          </div>
-        ) : null}
+        {myIdleIn != null && mySeat && mySeat.bet <= 0 ? <span>Bet within {myIdleIn}s</span> : null}
       </div>
 
-      {myResult ? (
-        <div className={`result-banner ${myResult.net >= 0 ? "win" : "lose"}`}>
-          {outcomeLabel(myResult.outcome, myResult.net)}
-          {table.mode === "practice" && mySeat ? (
-            <span className="muted"> · Balance {mySeat.practiceChips} chips</span>
-          ) : null}
-        </div>
-      ) : null}
-
-      <div className="felt">
-        <div className="deck-pile" aria-hidden>
-          <PlayingCard suit="hidden" rank={0} faceDown small />
-          <PlayingCard suit="hidden" rank={0} faceDown small />
-        </div>
-
-        <div className="dealer-zone">
-          <div className="zone-label">
-            Dealer · {table.dealerName}
-            {dealerTotalLabel != null ? ` · ${dealerTotalLabel}` : ""}
-          </div>
-          <div className="card-row">
-            {table.dealerHand.length === 0 ? (
-              <span className="muted empty-hand">Waiting for deal</span>
-            ) : (
-              table.dealerHand.map((card, i) => {
+      <div className="dealer-stage">
+        <p className="dealer-name">Dealer · {table.dealerName}</p>
+        <p className="dealer-total">{dealerTotalLabel != null ? `Showing ${dealerTotalLabel}` : table.phase === "betting" ? "Waiting for bets" : "Waiting for deal"}</p>
+        <div className="card-row center">
+          {table.dealerHand.length === 0
+            ? [0, 1].map((i) => <span key={i} className="card-ghost" aria-hidden />)
+            : table.dealerHand.map((card, i) => {
                 const facedown = card.suit === "hidden" || (i === 1 && holeHidden && !flipHole);
                 return (
                   <PlayingCard
@@ -133,117 +146,166 @@ export function BlackjackTableView({
                     dealDelayMs={i * 120}
                   />
                 );
-              })
-            )}
-          </div>
-        </div>
-
-        <div className="player-zones">
-          {seatSlots.map((seat, slot) => (
-            <div
-              key={slot}
-              className={`player-spot ${seat?.userId === profile.id ? "mine" : ""} ${
-                seat && table.activeSeatIndex === seat.seatIndex ? "active-turn" : ""
-              }`}
-            >
-              {seat ? (
-                <>
-                  <div className="spot-name">
-                    {seat.displayName}
-                    {seat.bet > 0 ? <span className="bet-chip">{seat.bet}</span> : null}
-                  </div>
-                  <div className="card-row">
-                    {seat.hand.length === 0 ? (
-                      <span className="muted empty-hand">—</span>
-                    ) : (
-                      seat.hand.map((card, i) => (
-                        <PlayingCard
-                          key={cardKey(card, i, seat.userId)}
-                          suit={card.suit}
-                          rank={card.rank}
-                          dealDelayMs={220 + seat.seatIndex * 60 + i * 140}
-                        />
-                      ))
-                    )}
-                  </div>
-                  {(() => {
-                    const total = reveal.playerHandTotal(seat.userId, seat.hand);
-                    return total != null ? <div className="hand-total">{total}</div> : null;
-                  })()}
-                  {table.mode === "practice" && seat.userId === profile.id ? (
-                    <div className="spot-chips">{seat.practiceChips ?? 0} chips</div>
-                  ) : null}
-                </>
-              ) : (
-                <div className="empty-spot">Seat {slot + 1}</div>
-              )}
-            </div>
-          ))}
+              })}
         </div>
       </div>
 
-      {isLiveAuto && table.phase === "betting" ? (
-        <p className="muted auto-hint">
-          {(() => {
-            const seated = table.seats.length;
-            const withBet = table.seats.filter((s) => s.bet > 0).length;
-            if (withBet === 0) return "Players place bets to start. Auto-deal when everyone seated has bet, or 8s after the first bet.";
-            if (withBet < seated) return "Some players have not bet yet — auto-deal in up to 8s, or the host can tap Deal now.";
-            return "All seated players have bet — dealing automatically.";
-          })()}
+      <div className="seat-rail">
+        {seatSlots.map((seat, slot) => {
+          const mine = seat?.userId === profile.id;
+          const active = Boolean(seat && table.activeSeatIndex === seat.seatIndex && seat.status === "acting");
+          const total = seat ? reveal.playerHandTotal(seat.userId, seat.hand) : null;
+          return (
+            <article key={slot} className={`seat ${mine ? "mine" : ""} ${active ? "active" : ""} ${seat ? "taken" : "open"}`}>
+              {seat ? (
+                <>
+                  <div className="card-row compact">
+                    {seat.hand.map((card, i) => (
+                      <PlayingCard
+                        key={cardKey(card, i, seat.userId)}
+                        suit={card.suit}
+                        rank={card.rank}
+                        small={!mine}
+                        dealDelayMs={220 + seat.seatIndex * 60 + i * 140}
+                      />
+                    ))}
+                  </div>
+                  {mine ? (
+                    <span ref={spotRef} className="chip-spot">
+                      {seat.bet > 0 && !flyer ? <span className="table-chip">{seat.bet}</span> : null}
+                    </span>
+                  ) : seat.bet > 0 ? (
+                    <span className="table-chip">{seat.bet}</span>
+                  ) : null}
+                  <strong>
+                    {mine ? "You" : seat.displayName}
+                    {total != null ? ` · ${total}` : ""}
+                  </strong>
+                  <span className={active ? "turn-pill" : "seat-meta"}>
+                    {active ? "Your turn" : seatStatus(seat, false)}
+                  </span>
+                </>
+              ) : (
+                <span>Open seat</span>
+              )}
+            </article>
+          );
+        })}
+      </div>
+
+      {resultCopy && table.phase === "betting" ? (
+        <p className={`round-result ${myResult?.net && myResult.net > 0 ? "win" : myResult?.net === 0 ? "push" : "lose"}`} role="status">
+          {resultCopy} Place your next bet.
         </p>
       ) : null}
 
-      <div className="actions table-actions">
-        {isHost && isLiveAuto ? (
-          <>
-            {table.phase === "betting" && table.seats.some((s) => s.bet > 0) ? (
-              <button type="button" disabled={!socketReady || busy} onClick={onDeal}>
-                Deal now
+      {canBet ? (
+        <form
+          className="bet-dock"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (invalidBet) return;
+              const from = (event.currentTarget.querySelector(".chip.selected") as HTMLElement | null)?.getBoundingClientRect();
+              const to = spotRef.current?.getBoundingClientRect();
+              if (from && to) {
+                const next = { amount, left: from.left, top: from.top, dx: to.left - from.left, dy: to.top - from.top, go: false };
+                setFlyer(next);
+                window.setTimeout(() => setFlyer({ ...next, go: true }), 30);
+                window.setTimeout(() => setFlyer(null), 820);
+              }
+              onBet();
+            }}
+        >
+          <div className="chip-row" role="group" aria-label="Quick bets">
+            {chips.map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={`chip v${value}${amount === value ? " selected" : ""}`}
+                aria-pressed={amount === value}
+                onClick={() => setBetAmount(String(value))}
+              >
+                {value}
               </button>
-            ) : null}
-            <button type="button" className="secondary" disabled={!socketReady || busy} onClick={onLeaveHost}>
-              Back to lobby (keep watching)
+            ))}
+            <label className="custom-bet">
+              Custom
+              <input
+                value={betAmount}
+                onChange={(event) => setBetAmount(event.target.value)}
+                type="number"
+                min={table.minBet}
+                max={table.maxBet}
+                inputMode="numeric"
+                aria-invalid={Boolean(invalidBet)}
+              />
+            </label>
+          </div>
+          <p className={invalidBet ? "bet-note bad" : "bet-note"}>
+            {invalidBet ?? `Table limits ${table.minBet}–${table.maxBet}`}
+          </p>
+          <button type="submit" className="confirm-bet" disabled={!socketReady || busy || Boolean(invalidBet)}>
+            Confirm bet {Number.isFinite(amount) && amount > 0 ? amount : ""}
+          </button>
+        </form>
+      ) : null}
+
+      {flyer ? (
+        <span
+          className={`chip flyer v${CHIP_VALUES.includes(flyer.amount) ? flyer.amount : 5}`}
+          style={{
+            left: flyer.left,
+            top: flyer.top,
+            transform: flyer.go ? `translate(${flyer.dx}px, ${flyer.dy}px) scale(0.72)` : "translate(0, 0)"
+          }}
+        >
+          {flyer.amount}
+        </span>
+      ) : null}
+
+      {myTurn ? (
+        <div className="action-dock" role="group" aria-label="Your turn">
+          <button type="button" disabled={!socketReady || busy} onClick={onHit}>
+            Hit
+          </button>
+          <button type="button" disabled={!socketReady || busy} onClick={onStand}>
+            Stand
+          </button>
+          <button type="button" disabled title="This table does not offer double">
+            Double
+          </button>
+          <button type="button" disabled title="This table does not offer split">
+            Split
+          </button>
+        </div>
+      ) : null}
+
+      {isHost && table.mode === "live" ? (
+        <div className="host-dock">
+          {table.phase === "betting" && table.seats.some((s) => s.bet > 0) ? (
+            <button type="button" disabled={!socketReady || busy} onClick={onDeal}>
+              Deal now
             </button>
-            <button type="button" className="secondary" disabled={!socketReady || busy} onClick={onEndTable}>
-              Close table and refund bankroll
-            </button>
-          </>
-        ) : null}
-        {isHost && !isLiveAuto && table.phase === "open" ? (
+          ) : null}
+          <button type="button" className="quiet" disabled={!socketReady || busy} onClick={onEndTable}>
+            Close table
+          </button>
+        </div>
+      ) : null}
+      {isHost && table.mode !== "live" && table.phase === "open" ? (
+        <div className="host-dock">
           <button type="button" disabled={!socketReady || busy} onClick={onStartBetting}>
             Open betting
           </button>
-        ) : null}
-        {isHost && !isLiveAuto && table.phase === "betting" ? (
+        </div>
+      ) : null}
+      {isHost && table.mode !== "live" && table.phase === "betting" ? (
+        <div className="host-dock">
           <button type="button" disabled={!socketReady || busy} onClick={onDeal}>
             Deal
           </button>
-        ) : null}
-        {!isHost && mySeat && table.phase === "betting" && mySeat.bet <= 0 ? (
-          <>
-            <input value={betAmount} onChange={(e) => setBetAmount(e.target.value)} type="number" min={table.minBet} max={table.maxBet} />
-            <button type="button" disabled={!socketReady || busy} onClick={onBet}>
-              Bet ({table.minBet}–{table.maxBet})
-            </button>
-          </>
-        ) : null}
-        {!isHost && mySeat?.status === "acting" && table.activeSeatIndex === mySeat.seatIndex ? (
-          <>
-            <button type="button" disabled={!socketReady || busy} onClick={onHit}>
-              Hit
-            </button>
-            <button type="button" disabled={!socketReady || busy} onClick={onStand}>
-              Stand
-            </button>
-          </>
-        ) : null}
-        {!isHost && mySeat ? (
-          <button type="button" className="secondary" disabled={!socketReady || busy} onClick={onLeave}>
-            Leave seat
-          </button>
-        ) : null}
-      </div>
-    </div>
+        </div>
+      ) : null}
+    </section>
   );
 }

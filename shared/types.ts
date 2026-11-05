@@ -173,10 +173,13 @@ export type BlackjackPublicTable = {
     handTotal: number | null;
     status: string;
     practiceChips: number | null;
+    idleEndsAt: number | null;
   }>;
   dealerHand: Array<{ suit: string; rank: number; label: string }>;
   dealerTotal: number | null;
   activeSeatIndex: number | null;
+  turnEndsAt: number | null;
+  dealStartsAt: number | null;
   lastRoundResults: Array<{
     userId: string;
     outcome: "win" | "lose" | "push" | "blackjack" | "bust";

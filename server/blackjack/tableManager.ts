@@ -3,6 +3,7 @@ import type { Server } from "socket.io";
 import type { WalletRealtime } from "../credits.js";
 import { adjustCredits, getCreditsBalance } from "../credits.js";
 import { isApprovedGroupMember } from "../groupsAccess.js";
+import { supabaseAdmin } from "../supabase.js";
 
 export type BlackjackRealtime = WalletRealtime & {
   blackjackLobby: (groupId: string) => void;
@@ -49,6 +50,7 @@ type InternalTable = {
   dealerHoleHidden: boolean;
   activeSeatIndex: number | null;
   turnStartedAt: number | null;
+  dealDeadlineAt: number | null;
   createdAt: number;
   lastRoundResults: RoundResult[];
 };
@@ -72,6 +74,7 @@ export type PublicSeat = {
   handTotal: number | null;
   status: SeatStatus;
   practiceChips: number | null;
+  idleEndsAt: number | null;
 };
 
 export type PublicTable = {
@@ -93,6 +96,8 @@ export type PublicTable = {
   dealerHand: PublicCard[];
   dealerTotal: number | null;
   activeSeatIndex: number | null;
+  turnEndsAt: number | null;
+  dealStartsAt: number | null;
   lastRoundResults: RoundResult[];
 };
 
@@ -139,11 +144,15 @@ function publicTable(table: InternalTable): PublicTable {
       hand: seat.hand.map(toPublicCard),
       handTotal: seat.hand.length ? handValue(seat.hand).total : null,
       status: seat.status,
-      practiceChips: table.mode === "practice" ? seat.practiceChips : null
+      practiceChips: table.mode === "practice" ? seat.practiceChips : null,
+      idleEndsAt:
+        (table.phase === "open" || table.phase === "betting") && seat.bet <= 0 ? seat.lastActionAt + SEAT_IDLE_MS : null
     })),
     dealerHand,
     dealerTotal,
     activeSeatIndex: table.activeSeatIndex,
+    turnEndsAt: table.phase === "playing" && table.turnStartedAt != null ? table.turnStartedAt + TURN_LIMIT_MS : null,
+    dealStartsAt: table.phase === "betting" ? table.dealDeadlineAt : null,
     lastRoundResults: table.lastRoundResults
   };
 }
@@ -159,7 +168,54 @@ export class BlackjackTableManager {
   private practiceCounter = new Map<string, number>();
 
   constructor(private realtime: BlackjackRealtime) {
+    void this.hydrate();
     setInterval(() => this.sweepInactive(), 5_000);
+  }
+
+  private async hydrate() {
+    const { data, error } = await supabaseAdmin.from("blackjack_tables").select("state");
+    if (error) {
+      console.error("Could not load blackjack tables:", error.message);
+      return;
+    }
+    for (const row of data ?? []) {
+      const table = row.state as InternalTable;
+      if (!table?.id || table.mode !== "live") continue;
+      this.tables.set(table.id, table);
+      if (table.dealerUserId) this.hostByUser.set(table.dealerUserId, table.id);
+      for (const seat of table.seats) this.userTable.set(seat.userId, table.id);
+      this.restoreDealTimer(table);
+    }
+  }
+
+  private async persist(table: InternalTable) {
+    if (table.mode !== "live" || table.phase === "finished") return;
+    const { error } = await supabaseAdmin.from("blackjack_tables").upsert({
+      id: table.id,
+      group_id: table.groupId,
+      state: table,
+      updated_at: new Date().toISOString()
+    });
+    if (error) throw new Error(error.message);
+  }
+
+  private async forgetPersisted(tableId: string) {
+    const { error } = await supabaseAdmin.from("blackjack_tables").delete().eq("id", tableId);
+    if (error) console.error("Could not remove blackjack table:", error.message);
+  }
+
+  private restoreDealTimer(table: InternalTable) {
+    if (table.mode !== "live" || table.phase !== "betting" || table.dealDeadlineAt == null) return;
+    const wait = Math.max(0, table.dealDeadlineAt - Date.now());
+    const tableId = table.id;
+    const timer = setTimeout(() => {
+      this.bettingTimers.delete(tableId);
+      const current = this.tables.get(tableId);
+      if (!current || current.phase !== "betting" || current.mode !== "live") return;
+      if (!current.seats.some((s) => s.bet > 0)) return;
+      void this.runLiveDeal(tableId);
+    }, wait);
+    this.bettingTimers.set(tableId, timer);
   }
 
   attachIo(io: Server) {
@@ -190,6 +246,7 @@ export class BlackjackTableManager {
       dealerHoleHidden: true,
       activeSeatIndex: null,
       turnStartedAt: null,
+      dealDeadlineAt: null,
       createdAt: Date.now(),
       lastRoundResults: []
     });
@@ -219,6 +276,9 @@ export class BlackjackTableManager {
   }
 
   private emitTable(table: InternalTable) {
+    void this.persist(table).catch((error: unknown) => {
+      console.error("Could not save blackjack table:", error instanceof Error ? error.message : error);
+    });
     this.io?.to(`blackjack:table:${table.id}`).emit("blackjack:state", publicTable(table));
     this.emitLobby(table.groupId);
   }
@@ -274,10 +334,21 @@ export class BlackjackTableManager {
       dealerHoleHidden: true,
       activeSeatIndex: null,
       turnStartedAt: null,
+      dealDeadlineAt: null,
       createdAt: Date.now(),
       lastRoundResults: []
     };
     this.tables.set(id, table);
+    try {
+      await this.persist(table);
+    } catch (error) {
+      this.tables.delete(id);
+      await adjustCredits(userId, input.bankroll, "payout", `Dealer bankroll returned: ${table.title}`, {
+        realtime: this.realtime,
+        walletReason: "dealer-bankroll-return"
+      });
+      throw new Error(error instanceof Error ? error.message : "Could not save the table");
+    }
     this.hostByUser.set(userId, id);
     this.userTable.set(userId, id);
     this.emitTable(table);
@@ -372,6 +443,8 @@ export class BlackjackTableManager {
     const t = this.bettingTimers.get(tableId);
     if (t) clearTimeout(t);
     this.bettingTimers.delete(tableId);
+    const table = this.tables.get(tableId);
+    if (table) table.dealDeadlineAt = null;
   }
 
   private maybeScheduleLiveDeal(table: InternalTable) {
@@ -390,6 +463,7 @@ export class BlackjackTableManager {
 
     this.clearBettingTimer(table.id);
     const tableId = table.id;
+    table.dealDeadlineAt = Date.now() + 8000;
     const timer = setTimeout(() => {
       this.bettingTimers.delete(tableId);
       const current = this.tables.get(tableId);
@@ -398,6 +472,7 @@ export class BlackjackTableManager {
       void this.runLiveDeal(tableId);
     }, 8000);
     this.bettingTimers.set(tableId, timer);
+    this.emitTable(table);
   }
 
   private emitTableError(table: InternalTable, message: string) {
@@ -449,6 +524,7 @@ export class BlackjackTableManager {
     }
     table.phase = "finished";
     table.dealerBankroll = 0;
+    await this.forgetPersisted(table.id);
     this.emitTable(table);
     this.tables.delete(table.id);
   }
