@@ -21,6 +21,8 @@ export default [
         RequestInit: "readonly",
         window: "readonly",
         localStorage: "readonly",
+        HTMLElement: "readonly",
+        HTMLSpanElement: "readonly",
         Image: "readonly",
         setTimeout: "readonly",
         clearTimeout: "readonly",
