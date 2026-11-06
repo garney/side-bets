@@ -12,7 +12,8 @@ import type {
   RedemptionStatus,
   SideBet,
   SideBetDetail,
-  LeaderboardRow
+  LeaderboardRow,
+  ShopOffer
 } from "../../shared/types";
 import { supabase } from "./supabase";
 
@@ -66,6 +67,8 @@ export const api = {
     }),
   groups: () => apiFetch<Group[]>("/groups"),
   leaderboard: () => apiFetch<LeaderboardRow[]>("/leaderboard"),
+  blackjackLeaderboard: (mode: "live" | "practice") =>
+    apiFetch<LeaderboardRow[]>(`/blackjack/leaderboard?mode=${encodeURIComponent(mode)}`),
   createGroup: (payload: { name: string; visibility: "public" | "private"; logoUrl?: string | null }) =>
     apiFetch<Group>("/groups", {
       method: "POST",
@@ -164,6 +167,18 @@ export const api = {
     }),
   adminReviewCreditRequest: (id: string, payload: { status: Exclude<CreditRequestStatus, "pending">; adminNote?: string }) =>
     apiFetch<CreditRequest>(`/admin/credit-requests/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  shop: () => apiFetch<ShopOffer[]>("/shop"),
+  adminShop: () => apiFetch<ShopOffer[]>("/admin/shop"),
+  adminCreateShopOffer: (payload: { title: string; xpCost: number; creditsGranted: number; active?: boolean }) =>
+    apiFetch<ShopOffer>("/admin/shop", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  adminUpdateShopOffer: (id: string, payload: Partial<{ title: string; xpCost: number; creditsGranted: number; active: boolean }>) =>
+    apiFetch<ShopOffer>(`/admin/shop/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload)
     })

@@ -13,11 +13,13 @@ import type {
   Group,
   GroupMember,
   RedemptionRequest,
-  RedemptionStatus
+  RedemptionStatus,
+  ShopOffer
 } from "../shared/types.js";
 import { requireAdmin, requireAuth, requireCreditAdmin, type AuthedRequest } from "./auth.js";
 import { mapSideBet, mapSideBetDetail } from "./mappers.js";
 import { supabaseAdmin } from "./supabase.js";
+import { cached } from "./memoryCache.js";
 
 const createBetSchema = z.object({
   title: z.string().min(5).max(140),
@@ -46,6 +48,13 @@ const joinBetSchema = z.object({
 
 const settleBetSchema = z.object({
   winningOptionId: z.string().min(1)
+});
+
+const shopOfferSchema = z.object({
+  title: z.string().min(2).max(80),
+  xpCost: z.number().int().min(1).max(1_000_000),
+  creditsGranted: z.number().positive().max(100_000),
+  active: z.boolean().optional()
 });
 
 const rectifySettlementSchema = z.object({
@@ -129,7 +138,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     const user = (req as AuthedRequest).user;
     const { data, error } = await supabaseAdmin
       .from("profiles")
-      .select("id, display_name, email, avatar_url, credits_balance")
+      .select("id, display_name, email, avatar_url, credits_balance, experience_points")
       .eq("id", user.id)
       .single();
 
@@ -148,6 +157,7 @@ export function createApiRouter(realtime: RealtimeNotifier) {
       email: data.email,
       avatarUrl: data.avatar_url,
       creditsBalance: Number(data.credits_balance),
+      experiencePoints: Number(data.experience_points ?? 0),
       isAdmin: user.isAdmin,
       isGroupAdmin: user.isGroupAdmin
     });
@@ -518,87 +528,226 @@ export function createApiRouter(realtime: RealtimeNotifier) {
    */
   router.get("/leaderboard", requireAuth, async (req, res) => {
     const user = (req as AuthedRequest).user;
-    let groupIds: string[] = [];
-    if (user.isAdmin) {
-      const { data, error } = await supabaseAdmin.from("groups").select("id");
-      if (error) {
-        res.status(500).json({ error: error.message });
-        return;
-      }
-      groupIds = (data ?? []).map((group) => group.id);
-    } else {
-      const [{ data: memberships, error: memberError }, { data: publicGroups, error: publicError }] = await Promise.all([
-        supabaseAdmin.from("group_memberships").select("group_id").eq("user_id", user.id).eq("status", "approved"),
-        supabaseAdmin.from("groups").select("id").eq("visibility", "public")
-      ]);
-      if (memberError || publicError) {
-        res.status(500).json({ error: memberError?.message ?? publicError?.message ?? "Could not load groups" });
-        return;
-      }
-      groupIds = [...new Set([...(memberships ?? []).map((row) => row.group_id), ...(publicGroups ?? []).map((group) => group.id)])];
+    try {
+      res.json(await cached(`side-bets-leaderboard:${user.id}`, () => loadSideBetLeaderboard(user)));
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "Could not load leaderboard" });
     }
-    if (groupIds.length === 0) {
-      res.json([]);
+  });
+
+  /**
+   * @swagger
+   * /blackjack/leaderboard:
+   *   get:
+   *     tags: [Blackjack]
+   *     security:
+   *       - bearerAuth: []
+   *     summary: Blackjack win leaderboard
+   *     description: Practice and live tables are ranked separately. A win is a winning hand or blackjack. Cached for 30 seconds.
+   *     parameters:
+   *       - in: query
+   *         name: mode
+   *         required: true
+   *         schema:
+   *           type: string
+   *           enum: [live, practice]
+   *     responses:
+   *       200:
+   *         description: Players ordered by wins
+   *       400:
+   *         description: Invalid mode
+   */
+  router.get("/blackjack/leaderboard", requireAuth, async (req, res) => {
+    const user = (req as AuthedRequest).user;
+    const mode = String(req.query.mode ?? "");
+    if (mode !== "live" && mode !== "practice") {
+      res.status(400).json({ error: "Choose live or practice" });
       return;
     }
+    try {
+      res.json(await cached(`blackjack-leaderboard:${mode}:${user.id}`, () => loadBlackjackLeaderboard(user, mode)));
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : "Could not load leaderboard" });
+    }
+  });
 
-    const { data: bets, error: betError } = await supabaseAdmin
-      .from("side_bets")
-      .select("id, winning_option_id")
-      .in("group_id", groupIds)
-      .eq("status", "settled")
-      .not("winning_option_id", "is", null);
-    if (betError) {
-      res.status(500).json({ error: betError.message });
+  /**
+   * @swagger
+   * /shop:
+   *   get:
+   *     tags: [Shop]
+   *     security:
+   *       - bearerAuth: []
+   *     summary: List active XP shop offers
+   *     description: Players can browse experience-to-credit mappings. Spending is not enabled yet.
+   *     responses:
+   *       200:
+   *         description: Active shop offers
+   */
+  router.get("/shop", requireAuth, async (_req, res) => {
+    const { data, error } = await supabaseAdmin
+      .from("shop_offers")
+      .select("id, title, xp_cost, credits_granted, active, created_at")
+      .eq("active", true)
+      .order("xp_cost", { ascending: true });
+    if (error) {
+      res.status(500).json({ error: error.message });
       return;
     }
+    res.json((data ?? []).map(mapShopOffer));
+  });
 
-    const winners = new Map((bets ?? []).map((bet) => [bet.id, bet.winning_option_id as string]));
-    const betIds = [...winners.keys()];
-    if (betIds.length === 0) {
-      res.json([]);
+  /**
+   * @swagger
+   * /admin/shop:
+   *   get:
+   *     tags: [Shop]
+   *     security:
+   *       - bearerAuth: []
+   *     summary: List all shop offers
+   *     description: Platform admins only. Includes inactive mappings.
+   *     responses:
+   *       200:
+   *         description: Shop offers
+   *       403:
+   *         description: Admin access required
+   *   post:
+   *     tags: [Shop]
+   *     security:
+   *       - bearerAuth: []
+   *     summary: Create an XP to credits shop offer
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [title, xpCost, creditsGranted]
+   *             properties:
+   *               title:
+   *                 type: string
+   *               xpCost:
+   *                 type: integer
+   *               creditsGranted:
+   *                 type: number
+   *               active:
+   *                 type: boolean
+   *           example:
+   *             title: 100 XP for 5 credits
+   *             xpCost: 100
+   *             creditsGranted: 5
+   *             active: true
+   *     responses:
+   *       201:
+   *         description: Offer created
+   *       400:
+   *         description: Invalid body
+   *       403:
+   *         description: Admin access required
+   */
+  router.get("/admin/shop", requireAuth, requireAdmin, async (_req, res) => {
+    const { data, error } = await supabaseAdmin
+      .from("shop_offers")
+      .select("id, title, xp_cost, credits_granted, active, created_at")
+      .order("created_at", { ascending: false });
+    if (error) {
+      res.status(500).json({ error: error.message });
       return;
     }
+    res.json((data ?? []).map(mapShopOffer));
+  });
 
-    const { data: entries, error: entryError } = await supabaseAdmin
-      .from("bet_entries")
-      .select("user_id, option_id, side_bet_id")
-      .in("side_bet_id", betIds);
-    if (entryError) {
-      res.status(500).json({ error: entryError.message });
+  router.post("/admin/shop", requireAuth, requireAdmin, async (req, res) => {
+    const parsed = shopOfferSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid shop offer" });
       return;
     }
-
-    const totals = new Map<string, { played: number; wins: number }>();
-    for (const entry of entries ?? []) {
-      const row = totals.get(entry.user_id) ?? { played: 0, wins: 0 };
-      row.played += 1;
-      if (winners.get(entry.side_bet_id) === entry.option_id) row.wins += 1;
-      totals.set(entry.user_id, row);
-    }
-
-    const userIds = [...totals.keys()];
-    const { data: profiles, error: profileError } = await supabaseAdmin.from("profiles").select("id, display_name").in("id", userIds);
-    if (profileError) {
-      res.status(500).json({ error: profileError.message });
-      return;
-    }
-    const names = new Map((profiles ?? []).map((profile) => [profile.id, profile.display_name as string]));
-
-    const board = userIds
-      .map((userId) => {
-        const row = totals.get(userId)!;
-        return {
-          userId,
-          displayName: names.get(userId) ?? "Player",
-          played: row.played,
-          wins: row.wins,
-          winRate: row.played === 0 ? 0 : row.wins / row.played
-        };
+    const user = (req as AuthedRequest).user;
+    const { data, error } = await supabaseAdmin
+      .from("shop_offers")
+      .insert({
+        title: parsed.data.title,
+        xp_cost: parsed.data.xpCost,
+        credits_granted: parsed.data.creditsGranted,
+        active: parsed.data.active ?? true,
+        created_by: user.id
       })
-      .sort((a, b) => b.winRate - a.winRate || b.played - a.played || a.displayName.localeCompare(b.displayName));
+      .select("id, title, xp_cost, credits_granted, active, created_at")
+      .single();
+    if (error || !data) {
+      res.status(500).json({ error: error?.message ?? "Could not create shop offer" });
+      return;
+    }
+    res.status(201).json(mapShopOffer(data));
+  });
 
-    res.json(board);
+  /**
+   * @swagger
+   * /admin/shop/{id}:
+   *   patch:
+   *     tags: [Shop]
+   *     security:
+   *       - bearerAuth: []
+   *     summary: Update a shop offer
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: string
+   *           format: uuid
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             properties:
+   *               title:
+   *                 type: string
+   *               xpCost:
+   *                 type: integer
+   *               creditsGranted:
+   *                 type: number
+   *               active:
+   *                 type: boolean
+   *     responses:
+   *       200:
+   *         description: Offer updated
+   *       400:
+   *         description: Invalid body
+   *       403:
+   *         description: Admin access required
+   *       404:
+   *         description: Offer not found
+   */
+  router.patch("/admin/shop/:id", requireAuth, requireAdmin, async (req, res) => {
+    const parsed = shopOfferSchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid shop offer" });
+      return;
+    }
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (parsed.data.title !== undefined) patch.title = parsed.data.title;
+    if (parsed.data.xpCost !== undefined) patch.xp_cost = parsed.data.xpCost;
+    if (parsed.data.creditsGranted !== undefined) patch.credits_granted = parsed.data.creditsGranted;
+    if (parsed.data.active !== undefined) patch.active = parsed.data.active;
+    const { data, error } = await supabaseAdmin
+      .from("shop_offers")
+      .update(patch)
+      .eq("id", req.params.id)
+      .select("id, title, xp_cost, credits_granted, active, created_at")
+      .maybeSingle();
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+    if (!data) {
+      res.status(404).json({ error: "Shop offer not found" });
+      return;
+    }
+    res.json(mapShopOffer(data));
   });
 
   router.get("/side-bets", requireAuth, async (req, res) => {
@@ -1780,6 +1929,105 @@ async function resolveCreateBetGroupId(groupId: string | undefined, user: Authed
   }
 
   throw new Error("Select a group for this side bet");
+}
+
+function mapShopOffer(row: {
+  id: string;
+  title: string;
+  xp_cost: number;
+  credits_granted: number | string;
+  active: boolean;
+  created_at: string;
+}): ShopOffer {
+  return {
+    id: row.id,
+    title: row.title,
+    xpCost: Number(row.xp_cost),
+    creditsGranted: Number(row.credits_granted),
+    active: row.active,
+    createdAt: row.created_at
+  };
+}
+
+async function visibleGroupIds(user: AuthedRequest["user"]) {
+  if (user.isAdmin) {
+    const { data, error } = await supabaseAdmin.from("groups").select("id");
+    if (error) throw new Error(error.message);
+    return (data ?? []).map((group) => group.id as string);
+  }
+  const [{ data: memberships, error: memberError }, { data: publicGroups, error: publicError }] = await Promise.all([
+    supabaseAdmin.from("group_memberships").select("group_id").eq("user_id", user.id).eq("status", "approved"),
+    supabaseAdmin.from("groups").select("id").eq("visibility", "public")
+  ]);
+  if (memberError || publicError) throw new Error(memberError?.message ?? publicError?.message ?? "Could not load groups");
+  return [...new Set([...(memberships ?? []).map((row) => row.group_id as string), ...(publicGroups ?? []).map((group) => group.id as string)])];
+}
+
+async function leaderboardFromTotals(totals: Map<string, { played: number; wins: number }>) {
+  const userIds = [...totals.keys()];
+  if (userIds.length === 0) return [];
+  const { data: profiles, error } = await supabaseAdmin.from("profiles").select("id, display_name").in("id", userIds);
+  if (error) throw new Error(error.message);
+  const names = new Map((profiles ?? []).map((profile) => [profile.id as string, profile.display_name as string]));
+  return userIds
+    .map((userId) => {
+      const row = totals.get(userId)!;
+      return {
+        userId,
+        displayName: names.get(userId) ?? "Player",
+        played: row.played,
+        wins: row.wins,
+        winRate: row.played === 0 ? 0 : row.wins / row.played
+      };
+    })
+    .sort((a, b) => b.wins - a.wins || b.winRate - a.winRate || b.played - a.played);
+}
+
+async function loadSideBetLeaderboard(user: AuthedRequest["user"]) {
+  const groupIds = await visibleGroupIds(user);
+  if (groupIds.length === 0) return [];
+  const { data: bets, error: betError } = await supabaseAdmin
+    .from("side_bets")
+    .select("id, winning_option_id")
+    .in("group_id", groupIds)
+    .eq("status", "settled")
+    .not("winning_option_id", "is", null);
+  if (betError) throw new Error(betError.message);
+  const winners = new Map((bets ?? []).map((bet) => [bet.id as string, bet.winning_option_id as string]));
+  const betIds = [...winners.keys()];
+  if (betIds.length === 0) return [];
+  const { data: entries, error: entryError } = await supabaseAdmin
+    .from("bet_entries")
+    .select("user_id, option_id, side_bet_id")
+    .in("side_bet_id", betIds);
+  if (entryError) throw new Error(entryError.message);
+  const totals = new Map<string, { played: number; wins: number }>();
+  for (const entry of entries ?? []) {
+    const row = totals.get(entry.user_id) ?? { played: 0, wins: 0 };
+    row.played += 1;
+    if (winners.get(entry.side_bet_id) === entry.option_id) row.wins += 1;
+    totals.set(entry.user_id, row);
+  }
+  return leaderboardFromTotals(totals);
+}
+
+async function loadBlackjackLeaderboard(user: AuthedRequest["user"], mode: "live" | "practice") {
+  const groupIds = await visibleGroupIds(user);
+  if (groupIds.length === 0) return [];
+  const { data, error } = await supabaseAdmin
+    .from("blackjack_round_results")
+    .select("user_id, outcome")
+    .eq("mode", mode)
+    .in("group_id", groupIds);
+  if (error) throw new Error(error.message);
+  const totals = new Map<string, { played: number; wins: number }>();
+  for (const row of data ?? []) {
+    const next = totals.get(row.user_id) ?? { played: 0, wins: 0 };
+    next.played += 1;
+    if (row.outcome === "win" || row.outcome === "blackjack") next.wins += 1;
+    totals.set(row.user_id, next);
+  }
+  return leaderboardFromTotals(totals);
 }
 
 async function canViewGroup(groupId: string | null, user: AuthedRequest["user"]) {

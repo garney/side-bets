@@ -4,6 +4,7 @@ import type { WalletRealtime } from "../credits.js";
 import { adjustCredits, getCreditsBalance } from "../credits.js";
 import { isApprovedGroupMember } from "../groupsAccess.js";
 import { supabaseAdmin } from "../supabase.js";
+import { recordBlackjackResults } from "./results.js";
 
 export type BlackjackRealtime = WalletRealtime & {
   blackjackLobby: (groupId: string) => void;
@@ -786,6 +787,7 @@ export class BlackjackTableManager {
     }
 
     table.lastRoundResults = results;
+    void recordBlackjackResults(table, results);
 
     if (table.mode === "live") {
       if (table.dealerBankroll <= 0 || table.dealerBankroll < table.minBet) {

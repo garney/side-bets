@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense, type FormEvent, type ReactNode } from "react";
-import { Bell, CheckCircle2, CircleDollarSign, Loader2, LogOut, MessageCircle, Plus, Search, Send, ShieldCheck, Spade, Trophy, UserCircle2, X } from "lucide-react";
+import { Bell, CheckCircle2, CircleDollarSign, Loader2, LogOut, MessageCircle, Plus, Search, Send, ShieldCheck, Sparkles, Spade, Trophy, UserCircle2, X } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
 import type {
   AdminSummary,
@@ -12,11 +12,13 @@ import type {
   Profile,
   RedemptionRequest,
   SideBet,
+  ShopOffer,
   SideBetDetail
 } from "../../shared/types";
 import { api } from "./api";
 import { supabase } from "./supabase";
 import { LeaderboardModal } from "./LeaderboardModal";
+import { ShopView } from "./ShopView";
 
 const BlackjackPage = lazy(() => import("./blackjack/BlackjackPage").then((module) => ({ default: module.BlackjackPage })));
 
@@ -33,7 +35,7 @@ function pushHomePath() {
 }
 
 type SessionState = "loading" | "signed-out" | "signed-in";
-type AppView = "side-bets" | "groups" | "admin";
+type AppView = "side-bets" | "groups" | "admin" | "shop";
 type PendingSettlement = {
   bet: SideBet;
   optionId: string;
@@ -710,6 +712,18 @@ export function App() {
               Side bets
             </button>
             <button
+              className={view === "shop" ? "active" : ""}
+              type="button"
+              onClick={() => {
+                if (routeSideBetId) {
+                  closeSideBetPage();
+                }
+                setView("shop");
+              }}
+            >
+              Shop
+            </button>
+            <button
               className={view === "groups" ? "active" : ""}
               type="button"
               onClick={() => {
@@ -739,7 +753,7 @@ export function App() {
           </div>
           <span className="balance">
             <CircleDollarSign size={17} />
-            {profile?.creditsBalance.toFixed(2) ?? "0.00"} credits
+            {profile?.creditsBalance.toFixed(2) ?? "0.00"} credits · {profile?.experiencePoints ?? 0} XP
           </span>
           <button className="icon-button" onClick={signOut} aria-label="Sign out">
             <LogOut size={18} />
@@ -841,6 +855,8 @@ export function App() {
             />
           ) : null}
         </>
+      ) : view === "shop" ? (
+        <ShopView experiencePoints={profile?.experiencePoints ?? 0} />
       ) : view === "groups" ? (
         <GroupsView
           groups={groups}
@@ -874,6 +890,7 @@ export function App() {
           creditRequests={adminCreditRequests}
           busy={busy}
           onAction={withAction}
+          isPlatformAdmin={Boolean(profile?.isAdmin)}
           onOpenGroups={() => {
             if (routeSideBetId) {
               closeSideBetPage();
@@ -1026,6 +1043,7 @@ function SideBetListView({
         <Metric icon={<Bell size={18} />} label="Open bets" value={loading ? "…" : activeBets.toString()} />
         <Metric icon={<Trophy size={18} />} label="Total bets" value={loading ? "…" : sideBets.length.toString()} />
         <Metric icon={<CircleDollarSign size={18} />} label="Wallet" value={`${profile?.creditsBalance.toFixed(2) ?? "0.00"} cr`} />
+        <Metric icon={<Sparkles size={18} />} label="XP" value={String(profile?.experiencePoints ?? 0)} />
         <Metric icon={<CheckCircle2 size={18} />} label="Fee" value="0%" />
       </section>
 
@@ -2193,6 +2211,7 @@ function AdminCentre({
   redemptions,
   creditRequests,
   busy,
+  isPlatformAdmin,
   onAction,
   onOpenGroups
 }: {
@@ -2202,6 +2221,7 @@ function AdminCentre({
   redemptions: RedemptionRequest[];
   creditRequests: CreditRequest[];
   busy: boolean;
+  isPlatformAdmin: boolean;
   onAction: (action: () => Promise<unknown>, success: string) => Promise<void>;
   onOpenGroups: () => void;
 }) {
@@ -2209,6 +2229,15 @@ function AdminCentre({
   const [creditAmount, setCreditAmount] = useState(10);
   const [creditDescription, setCreditDescription] = useState("Admin credit top-up");
   const selectedUserId = creditUserId || users[0]?.id || "";
+  const [shopOffers, setShopOffers] = useState<ShopOffer[]>([]);
+  const [shopTitle, setShopTitle] = useState("100 XP for 5 credits");
+  const [shopXp, setShopXp] = useState(100);
+  const [shopCredits, setShopCredits] = useState(5);
+
+  useEffect(() => {
+    if (!isPlatformAdmin) return;
+    void api.adminShop().then(setShopOffers).catch(() => setShopOffers([]));
+  }, [isPlatformAdmin]);
 
   async function addCredits(event: FormEvent) {
     event.preventDefault();
@@ -2242,6 +2271,73 @@ function AdminCentre({
         <h2>Admin Centre</h2>
         <span>Transactions and platform view</span>
       </div>
+      {isPlatformAdmin ? (
+        <section className="credit-adjustment">
+          <div className="section-heading">
+            <h2>XP Shop</h2>
+            <span>Platform admins only</span>
+          </div>
+          <p className="muted">Map experience to credits. Players can see active rates in Shop. Spending is not open yet.</p>
+          <form
+            onSubmit={async (event) => {
+              event.preventDefault();
+              await onAction(
+                () =>
+                  api.adminCreateShopOffer({
+                    title: shopTitle,
+                    xpCost: Number(shopXp),
+                    creditsGranted: Number(shopCredits),
+                    active: true
+                  }),
+                "Shop rate added"
+              );
+              setShopOffers(await api.adminShop());
+            }}
+          >
+            <label>
+              Label
+              <input value={shopTitle} onChange={(event) => setShopTitle(event.target.value)} />
+            </label>
+            <div className="split-fields">
+              <label>
+                XP cost
+                <input min="1" type="number" value={shopXp} onChange={(event) => setShopXp(Number(event.target.value))} />
+              </label>
+              <label>
+                Credits
+                <input min="0.01" step="0.01" type="number" value={shopCredits} onChange={(event) => setShopCredits(Number(event.target.value))} />
+              </label>
+            </div>
+            <button className="primary-button" disabled={busy || !shopTitle.trim()}>
+              Add mapping
+            </button>
+          </form>
+          {shopOffers.map((offer) => (
+            <article className="credit-request-item" key={offer.id}>
+              <div>
+                <strong>
+                  {offer.title} · {offer.xpCost} XP = {offer.creditsGranted} cr
+                </strong>
+                <span className={`status ${offer.active ? "approved" : "rejected"}`}>{offer.active ? "active" : "hidden"}</span>
+              </div>
+              <div className="row-actions">
+                <button
+                  disabled={busy}
+                  onClick={() =>
+                    void onAction(async () => {
+                      await api.adminUpdateShopOffer(offer.id, { active: !offer.active });
+                      setShopOffers(await api.adminShop());
+                    }, offer.active ? "Shop rate hidden" : "Shop rate shown")
+                  }
+                >
+                  {offer.active ? "Hide" : "Show"}
+                </button>
+              </div>
+            </article>
+          ))}
+          {shopOffers.length === 0 ? <p className="muted">No XP rates yet.</p> : null}
+        </section>
+      ) : null}
       <section className="admin-groups-link">
         <div>
           <strong>Group management</strong>

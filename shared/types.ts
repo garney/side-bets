@@ -11,6 +11,7 @@ export type Profile = {
   email: string | null;
   avatarUrl: string | null;
   creditsBalance: number;
+  experiencePoints: number;
   isAdmin: boolean;
   isGroupAdmin: boolean;
 };
@@ -155,6 +156,15 @@ export type AdminUser = {
   displayName: string;
   email: string | null;
   creditsBalance: number;
+};
+
+export type ShopOffer = {
+  id: string;
+  title: string;
+  xpCost: number;
+  creditsGranted: number;
+  active: boolean;
+  createdAt: string;
 };
 
 export type BlackjackPublicTable = {

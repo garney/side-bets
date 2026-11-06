@@ -738,3 +738,98 @@ button:disabled {
 .playing-card.small .pip {
   font-size: 20px;
 }
+
+.blackjack-shell .modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(23, 33, 31, 0.52);
+}
+
+.blackjack-shell .modal-panel {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: min(860px, calc(100vh - 48px));
+  overflow: auto;
+  background: #ffffff;
+  color: #17211c;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  box-shadow: 0 24px 80px rgba(23, 33, 31, 0.26);
+  padding: 20px;
+}
+
+.blackjack-shell .leaderboard-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.blackjack-shell .view-switch {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 12px;
+  background: #f3f6f4;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+}
+
+.blackjack-shell .view-switch button {
+  min-height: 32px;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: transparent;
+  color: #53615c;
+  font-weight: 800;
+}
+
+.blackjack-shell .view-switch button.active {
+  background: #173d3a;
+  color: #ffffff;
+}
+
+.blackjack-shell .leaderboard-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.blackjack-shell .leaderboard-table th,
+.blackjack-shell .leaderboard-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid #e7ece8;
+}
+
+.blackjack-shell .leaderboard-table th:first-child,
+.blackjack-shell .leaderboard-table td:first-child,
+.blackjack-shell .leaderboard-table th:nth-child(2),
+.blackjack-shell .leaderboard-table td:nth-child(2) {
+  text-align: left;
+}
+
+.blackjack-shell .leaderboard-table th:not(:first-child):not(:nth-child(2)),
+.blackjack-shell .leaderboard-table td:not(:first-child):not(:nth-child(2)) {
+  text-align: right;
+}
+
+.blackjack-shell .leaderboard-table tr.mine td {
+  font-weight: 700;
+  background: #f3f8f4;
+}
+
+.blackjack-shell .muted {
+  color: #5d6b63;
+}
+
+.blackjack-shell .icon-button {
+  background: transparent;
+  color: #17211c;
+  border: 0;
+  min-height: 44px;
+  min-width: 44px;
+}

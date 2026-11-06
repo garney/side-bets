@@ -6,9 +6,24 @@ import { api } from "./api";
 type Props = {
   currentUserId: string;
   onClose: () => void;
+  title?: string;
+  subtitle?: string;
+  load?: () => Promise<LeaderboardRow[]>;
+  extraTabs?: Array<{ id: string; label: string }>;
+  extraTab?: string;
+  onExtraTab?: (id: string) => void;
 };
 
-export function LeaderboardModal({ currentUserId, onClose }: Props) {
+export function LeaderboardModal({
+  currentUserId,
+  onClose,
+  title = "Leaderboard",
+  subtitle = "Settled side bets in your groups",
+  load = () => api.leaderboard(),
+  extraTabs,
+  extraTab,
+  onExtraTab
+}: Props) {
   const [rows, setRows] = useState<LeaderboardRow[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -23,8 +38,8 @@ export function LeaderboardModal({ currentUserId, onClose }: Props) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    void api
-      .leaderboard()
+    setError("");
+    void load()
       .then((next) => {
         if (!cancelled) setRows(next);
       })
@@ -37,20 +52,36 @@ export function LeaderboardModal({ currentUserId, onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [load]);
 
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <section className="modal-panel leaderboard-panel" role="dialog" aria-modal="true" aria-labelledby="leaderboard-title" onClick={(event) => event.stopPropagation()}>
         <header className="modal-header">
           <div>
-            <h2 id="leaderboard-title">Leaderboard</h2>
-            <p className="muted">Settled side bets in your groups</p>
+            <h2 id="leaderboard-title">{title}</h2>
+            <p className="muted">{subtitle}</p>
           </div>
           <button className="icon-button modal-close" type="button" onClick={onClose} aria-label="Close leaderboard">
             <X size={18} />
           </button>
         </header>
+        {extraTabs && extraTab && onExtraTab ? (
+          <div className="view-switch" role="tablist" aria-label="Table type">
+            {extraTabs.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={extraTab === item.id ? "active" : ""}
+                role="tab"
+                aria-selected={extraTab === item.id}
+                onClick={() => onExtraTab(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <div className="view-switch" role="tablist" aria-label="Leaderboard ranking">
           <button type="button" className={tab === "rate" ? "active" : ""} role="tab" aria-selected={tab === "rate"} onClick={() => setTab("rate")}>
             Win rate
@@ -61,7 +92,7 @@ export function LeaderboardModal({ currentUserId, onClose }: Props) {
         </div>
         {loading ? <p>Loading…</p> : null}
         {error ? <p className="error">{error}</p> : null}
-        {!loading && !error && rows.length === 0 ? <p className="muted">No settled bets in this group yet.</p> : null}
+        {!loading && !error && rows.length === 0 ? <p className="muted">No finished hands yet.</p> : null}
         {rows.length > 0 ? (
           <table className="leaderboard-table">
             <thead>

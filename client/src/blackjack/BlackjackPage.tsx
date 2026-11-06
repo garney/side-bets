@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Trophy } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
 import type { Group, Profile, PublicTable } from "../../../shared/types";
 import { api } from "../api";
@@ -6,6 +7,7 @@ import { supabase } from "../supabase";
 import { BlackjackTableView } from "./components/BlackjackTableView";
 import { preloadCardAssets } from "./cardAssets";
 import { clearActiveTable, readActiveTable, rejoinNotice, saveActiveTable } from "./session";
+import { LeaderboardModal } from "../LeaderboardModal";
 import "./blackjack.css";
 
 type Props = {
@@ -46,6 +48,9 @@ export function BlackjackPage({ onExit }: Props) {
   const [busy, setBusy] = useState(false);
   const [hostOpen, setHostOpen] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [boardMode, setBoardMode] = useState<"live" | "practice">("live");
+  const loadBoard = useCallback(() => api.blackjackLeaderboard(boardMode), [boardMode]);
   const [hostTitle, setHostTitle] = useState("Friday night");
   const [hostBankroll, setHostBankroll] = useState("500");
   const [hostMin, setHostMin] = useState("1");
@@ -121,7 +126,12 @@ export function BlackjackPage({ onExit }: Props) {
           if (relevant) setTable(null);
           return;
         }
-        if (relevant) setTable(state);
+        if (relevant) {
+          setTable(state);
+          if (state.lastRoundResults?.length) {
+            void api.me().then(setProfile).catch(() => undefined);
+          }
+        }
       });
       socket.on("blackjack:error", (payload: { message?: string }) => {
         if (payload?.message) setMessage(payload.message);
@@ -188,7 +198,10 @@ export function BlackjackPage({ onExit }: Props) {
           <span>Blackjack</span>
         </div>
         <div className="bj-brand">
-          <span className="wallet-pill">{profile?.creditsBalance ?? 0} credits</span>
+          <button type="button" className="leave-table" aria-label="Blackjack leaderboard" onClick={() => setLeaderboardOpen(true)}>
+            <Trophy size={18} />
+          </button>
+          <span className="wallet-pill">{profile?.creditsBalance ?? 0} credits · {profile?.experiencePoints ?? 0} XP</span>
           {table ? (
             <button type="button" className="leave-table" disabled={!socketReady || busy} onClick={() => setConfirmLeave(true)}>
               Leave table
@@ -203,6 +216,22 @@ export function BlackjackPage({ onExit }: Props) {
         </p>
       ) : null}
       {message ? <p className="bj-toast error">{message}</p> : null}
+
+      {leaderboardOpen ? (
+        <LeaderboardModal
+          currentUserId={profile?.id ?? ""}
+          title="Blackjack leaderboard"
+          subtitle={boardMode === "live" ? "Live tables · real credits" : "Practice tables · chips only"}
+          load={loadBoard}
+          extraTabs={[
+            { id: "live", label: "Live" },
+            { id: "practice", label: "Practice" }
+          ]}
+          extraTab={boardMode}
+          onExtraTab={(id) => setBoardMode(id === "practice" ? "practice" : "live")}
+          onClose={() => setLeaderboardOpen(false)}
+        />
+      ) : null}
 
       {table && profile ? (
         <BlackjackTableView
