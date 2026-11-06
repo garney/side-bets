@@ -11,7 +11,8 @@ import type {
   RedemptionRequest,
   RedemptionStatus,
   SideBet,
-  SideBetDetail
+  SideBetDetail,
+  LeaderboardRow
 } from "../../shared/types";
 import { supabase } from "./supabase";
 
@@ -64,6 +65,7 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   groups: () => apiFetch<Group[]>("/groups"),
+  leaderboard: () => apiFetch<LeaderboardRow[]>("/leaderboard"),
   createGroup: (payload: { name: string; visibility: "public" | "private"; logoUrl?: string | null }) =>
     apiFetch<Group>("/groups", {
       method: "POST",

@@ -16,6 +16,7 @@ import type {
 } from "../../shared/types";
 import { api } from "./api";
 import { supabase } from "./supabase";
+import { LeaderboardModal } from "./LeaderboardModal";
 
 const BlackjackPage = lazy(() => import("./blackjack/BlackjackPage").then((module) => ({ default: module.BlackjackPage })));
 
@@ -106,6 +107,7 @@ export function App() {
   const [sideBetCommentBusy, setSideBetCommentBusy] = useState(false);
   const [view, setView] = useState<AppView>("side-bets");
   const [onBlackjack, setOnBlackjack] = useState(isBlackjackPath);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const chatOpenRef = useRef(false);
@@ -685,6 +687,15 @@ export function App() {
           >
             <Spade size={18} />
           </button>
+          <button
+            type="button"
+            className="icon-button"
+            title="Win rate leaderboard"
+            aria-label="Open leaderboard"
+            onClick={() => setLeaderboardOpen(true)}
+          >
+            <Trophy size={18} />
+          </button>
           <div className="view-switch" aria-label="View switcher">
             <button
               className={view === "side-bets" ? "active" : ""}
@@ -735,6 +746,13 @@ export function App() {
           </button>
         </div>
       </header>
+
+      {leaderboardOpen ? (
+        <LeaderboardModal
+          currentUserId={profile?.id ?? ""}
+          onClose={() => setLeaderboardOpen(false)}
+        />
+      ) : null}
 
       {message ? <div className="toast">{message}</div> : null}
 

@@ -492,6 +492,115 @@ export function createApiRouter(realtime: RealtimeNotifier) {
     res.json({ ok: true });
   });
 
+  /**
+   * @swagger
+   * /leaderboard:
+   *   get:
+   *     tags: [Side bets]
+   *     security:
+   *       - bearerAuth: []
+   *     summary: Win rate leaderboard for a group
+   *     description: Counts settled side bets in the group. A win is an entry on the winning option.
+   *     parameters:
+   *       - in: query
+   *         name: groupId
+   *         required: true
+   *         schema:
+   *           type: string
+   *           format: uuid
+   *     responses:
+   *       200:
+   *         description: Players ordered by win rate
+   *       400:
+   *         description: Missing group
+   *       403:
+   *         description: Not a member of the group
+   */
+  router.get("/leaderboard", requireAuth, async (req, res) => {
+    const user = (req as AuthedRequest).user;
+    let groupIds: string[] = [];
+    if (user.isAdmin) {
+      const { data, error } = await supabaseAdmin.from("groups").select("id");
+      if (error) {
+        res.status(500).json({ error: error.message });
+        return;
+      }
+      groupIds = (data ?? []).map((group) => group.id);
+    } else {
+      const [{ data: memberships, error: memberError }, { data: publicGroups, error: publicError }] = await Promise.all([
+        supabaseAdmin.from("group_memberships").select("group_id").eq("user_id", user.id).eq("status", "approved"),
+        supabaseAdmin.from("groups").select("id").eq("visibility", "public")
+      ]);
+      if (memberError || publicError) {
+        res.status(500).json({ error: memberError?.message ?? publicError?.message ?? "Could not load groups" });
+        return;
+      }
+      groupIds = [...new Set([...(memberships ?? []).map((row) => row.group_id), ...(publicGroups ?? []).map((group) => group.id)])];
+    }
+    if (groupIds.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const { data: bets, error: betError } = await supabaseAdmin
+      .from("side_bets")
+      .select("id, winning_option_id")
+      .in("group_id", groupIds)
+      .eq("status", "settled")
+      .not("winning_option_id", "is", null);
+    if (betError) {
+      res.status(500).json({ error: betError.message });
+      return;
+    }
+
+    const winners = new Map((bets ?? []).map((bet) => [bet.id, bet.winning_option_id as string]));
+    const betIds = [...winners.keys()];
+    if (betIds.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const { data: entries, error: entryError } = await supabaseAdmin
+      .from("bet_entries")
+      .select("user_id, option_id, side_bet_id")
+      .in("side_bet_id", betIds);
+    if (entryError) {
+      res.status(500).json({ error: entryError.message });
+      return;
+    }
+
+    const totals = new Map<string, { played: number; wins: number }>();
+    for (const entry of entries ?? []) {
+      const row = totals.get(entry.user_id) ?? { played: 0, wins: 0 };
+      row.played += 1;
+      if (winners.get(entry.side_bet_id) === entry.option_id) row.wins += 1;
+      totals.set(entry.user_id, row);
+    }
+
+    const userIds = [...totals.keys()];
+    const { data: profiles, error: profileError } = await supabaseAdmin.from("profiles").select("id, display_name").in("id", userIds);
+    if (profileError) {
+      res.status(500).json({ error: profileError.message });
+      return;
+    }
+    const names = new Map((profiles ?? []).map((profile) => [profile.id, profile.display_name as string]));
+
+    const board = userIds
+      .map((userId) => {
+        const row = totals.get(userId)!;
+        return {
+          userId,
+          displayName: names.get(userId) ?? "Player",
+          played: row.played,
+          wins: row.wins,
+          winRate: row.played === 0 ? 0 : row.wins / row.played
+        };
+      })
+      .sort((a, b) => b.winRate - a.winRate || b.played - a.played || a.displayName.localeCompare(b.displayName));
+
+    res.json(board);
+  });
+
   router.get("/side-bets", requireAuth, async (req, res) => {
     const user = (req as AuthedRequest).user;
     const search = String(req.query.search ?? "").trim();

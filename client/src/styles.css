@@ -327,6 +327,50 @@ button:disabled {
   resize: none;
 }
 
+.leaderboard-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.leaderboard-panel .view-switch {
+  margin-bottom: 12px;
+}
+
+.leaderboard-panel {
+  width: min(560px, 100%);
+  padding: 20px;
+}
+
+.leaderboard-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.leaderboard-table th,
+.leaderboard-table td {
+  text-align: left;
+  padding: 10px 8px;
+  border-bottom: 1px solid #e7ece8;
+}
+
+.leaderboard-table th:not(:first-child),
+.leaderboard-table td:not(:nth-child(2)) {
+  text-align: right;
+}
+
+.leaderboard-table th:nth-child(2),
+.leaderboard-table td:nth-child(2) {
+  text-align: left;
+}
+
+.leaderboard-table tr.mine td {
+  font-weight: 700;
+  background: #f3f8f4;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

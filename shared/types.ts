@@ -142,6 +142,14 @@ export type AdminSummary = {
   totalTransactions: number;
 };
 
+export type LeaderboardRow = {
+  userId: string;
+  displayName: string;
+  played: number;
+  wins: number;
+  winRate: number;
+};
+
 export type AdminUser = {
   id: string;
   displayName: string;
